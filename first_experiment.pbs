@@ -1,0 +1,7 @@
+python -u src/phase_diagram/experiment.py \
+  --config configs/same_as_paper.json \
+  --output_dir data/ts_runs \
+  --train_script training/train_teacher_student.py \
+  --shard_id ${PBS_ARRAY_INDEX} \
+  --num_shards 10 \
+  --resume
