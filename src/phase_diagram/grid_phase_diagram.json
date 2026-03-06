@@ -1,0 +1,23 @@
+{
+  "architecture": {
+    "input_dim": 3,
+    "hidden_dims": [32, 16],
+    "output_dim": 1
+  },
+  "dataset": {
+    "n_train": 1024,
+    "n_test": 8192,
+    "x_mean": 0.0,
+    "x_std": 1.0
+  },
+  "seeds": [0, 1, 2, 3, 4],
+  "grid": {
+    "lr": [0.001953125, 0.00390625, 0.0078125, 0.015625, 0.03125],
+    "batch_size": [256],
+    "num_updates": [100000],
+    "sigma2_w": [0.0625, 0.125, 0.25, 0.5, 1.0, 2.0, 4.0],
+    "eval_steps": [[0, 10, 100, 1000, 10000, 50000, 100000]],
+    "device": ["cuda"],
+    "use_float64": [false]
+  }
+}
