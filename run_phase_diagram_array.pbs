@@ -25,8 +25,8 @@ set -euo pipefail
 # User-editable settings
 # -------------------------------
 REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
-CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/experiments/phase_diagram/grid_phase_diagram.json}"
-TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/training/train_teacher_student.py}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiments/phase_diagram/grid_phase_diagram.json}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_teacher_student.py}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/results/phase_diagram}"
 MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
 NUM_SHARDS="${NUM_SHARDS:-10}"
