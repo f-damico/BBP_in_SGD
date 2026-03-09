@@ -21,7 +21,7 @@ For the paper-reproduction experiment, the intended use is:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence, Union
+from typing import Any, Dict, Iterable, Sequence, Union
 import json
 
 import torch
@@ -55,12 +55,16 @@ def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
 def init_linear_normal_scaled(
     linear: nn.Linear,
     sigma2_w: float,
-    generator: torch.Generator,
+    generator=None,
 ) -> None:
     """
     Initialise a linear layer with
         W_ij ~ N(0, sigma2_w / n_in)
     and no bias.
+
+    The 'generator' argument is kept only for compatibility with the rest
+    of the codebase, but it is intentionally ignored to avoid CPU/CUDA
+    generator mismatch errors on GPU.
     """
     if linear.bias is not None:
         raise ValueError("This model is defined with bias=False only.")
@@ -70,7 +74,18 @@ def init_linear_normal_scaled(
     n_in = linear.in_features
     std = (float(sigma2_w) / float(n_in)) ** 0.5
     with torch.no_grad():
-        linear.weight.normal_(mean=0.0, std=std, generator=generator)
+        linear.weight.normal_(mean=0.0, std=std)
+
+
+def set_seed_everywhere(seed: int) -> None:
+    """
+    Set PyTorch RNG seed for both CPU and CUDA.
+    """
+    seed = int(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
 
 # -----------------------------------------------------------------------------
@@ -139,13 +154,12 @@ class TeacherStudentMLP(nn.Module):
         seed: int,
     ) -> None:
         """
-        Initialise every linear layer with the same variance convention:
+        Initialise every linear layer with:
             W_ij ~ N(0, sigma2_w / n_in).
         """
-        generator = torch.Generator(device="cpu")
-        generator.manual_seed(int(seed))
+        set_seed_everywhere(seed)
         for layer in self.linears:
-            init_linear_normal_scaled(layer, sigma2_w=sigma2_w, generator=generator)
+            init_linear_normal_scaled(layer, sigma2_w=sigma2_w)
 
     def copy_all_layers_from(self, other: "TeacherStudentMLP") -> None:
         self._check_same_architecture(other)
@@ -164,10 +178,12 @@ class TeacherStudentMLP(nn.Module):
         sigma2_w: float,
         seed: int,
     ) -> None:
-        generator = torch.Generator(device="cpu")
-        generator.manual_seed(int(seed))
+        set_seed_everywhere(seed)
         for idx in layer_indices:
-            init_linear_normal_scaled(self.linears[idx], sigma2_w=sigma2_w, generator=generator)
+            init_linear_normal_scaled(
+                self.linears[idx],
+                sigma2_w=sigma2_w,
+            )
 
     def set_trainable_layers(self, layer_indices: Iterable[int]) -> None:
         layer_indices = set(int(i) for i in layer_indices)
@@ -269,7 +285,6 @@ def get_middle_layer_index(model: TeacherStudentMLP) -> int:
     Return the central linear-layer index.
 
     For the exact paper setup (3 linear layers), this is 1.
-    We keep the helper explicit so the training code stays readable.
     """
     if model.num_linear_layers % 2 == 0:
         raise ValueError(

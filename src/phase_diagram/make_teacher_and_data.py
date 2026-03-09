@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Union
 
 import json
 
@@ -42,6 +42,21 @@ def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
             ) from e
         return yaml.safe_load(path.read_text(encoding="utf-8"))
     raise ValueError(f"Unsupported config extension: {path.suffix}")
+
+
+# ----------------------------
+# Helpers
+# ----------------------------
+
+def _make_generator(device: Union[str, torch.device], seed: int) -> torch.Generator:
+    """
+    Create a torch random generator on the requested device.
+    This is required when initializing / sampling directly on CUDA tensors.
+    """
+    device = torch.device(device)
+    gen = torch.Generator(device=device)
+    gen.manual_seed(int(seed))
+    return gen
 
 
 # ----------------------------
@@ -98,18 +113,25 @@ def build_teacher(
     Default paper teacher: sigma2_w_teacher = 1.
     """
     device = torch.device(device)
-    gen = torch.Generator(device="cpu")
-    gen.manual_seed(int(seed_teacher))
 
-    # If you already implemented a centralized model in models/, use it here.
-    # For now, this is a local fallback implementation.
-    teacher = _MLPNoBiasTanh(input_dim=input_dim, hidden_dims=hidden_dims, output_dim=output_dim)
-    teacher.to(device=device, dtype=dtype)
-    teacher.eval()
+    # Build teacher directly on the requested device (GPU in your case)
+    teacher = _MLPNoBiasTanh(
+        input_dim=input_dim,
+        hidden_dims=hidden_dims,
+        output_dim=output_dim,
+    ).to(device=device, dtype=dtype)
+
+    # Generator must live on the same device as the weights
+    gen = _make_generator(device=device, seed=seed_teacher)
 
     for linear in teacher.linears:
-        _init_linear_normal_scaled(linear, sigma2_w=float(sigma2_w_teacher), gen=gen)
+        _init_linear_normal_scaled(
+            linear,
+            sigma2_w=float(sigma2_w_teacher),
+            gen=gen,
+        )
 
+    teacher.eval()
     return teacher
 
 
@@ -130,8 +152,8 @@ def make_teacher_and_data(
     config_path: Union[str, Path],
     *,
     seed: int,
-    device_teacher: Union[str, torch.device] = "cpu",
-    device_data: Union[str, torch.device] = "cpu",
+    device_teacher: Union[str, torch.device] = "cuda",
+    device_data: Union[str, torch.device] = "cuda",
     dtype: torch.dtype = torch.float32,
 ) -> TeacherData:
     """
@@ -161,6 +183,9 @@ def make_teacher_and_data(
     x_mean = float(ds.get("x_mean", 0.0))
     x_std = float(ds.get("x_std", 1.0))
 
+    device_teacher = torch.device(device_teacher)
+    device_data = torch.device(device_data)
+
     teacher = build_teacher(
         input_dim=input_dim,
         hidden_dims=hidden_dims,
@@ -171,22 +196,40 @@ def make_teacher_and_data(
         dtype=dtype,
     )
 
-    # Generate data on CPU by default (or device_data if you prefer).
-    device_data = torch.device(device_data)
-    gen_data = torch.Generator(device="cpu")
-    gen_data.manual_seed(int(seed) + 10_000)
+    # Data generator must be on the same device as the sampled tensors
+    gen_data = _make_generator(device=device_data, seed=int(seed) + 10_000)
 
-    X_train = torch.randn((n_train, input_dim), generator=gen_data, dtype=dtype, device=device_data) * x_std + x_mean
-    X_test = torch.randn((n_test, input_dim), generator=gen_data, dtype=dtype, device=device_data) * x_std + x_mean
+    X_train = (
+        torch.randn(
+            (n_train, input_dim),
+            generator=gen_data,
+            dtype=dtype,
+            device=device_data,
+        ) * x_std + x_mean
+    )
+    X_test = (
+        torch.randn(
+            (n_test, input_dim),
+            generator=gen_data,
+            dtype=dtype,
+            device=device_data,
+        ) * x_std + x_mean
+    )
 
     # Teacher forward for labels
     with torch.no_grad():
-        # ensure teacher and inputs are on same device for forward
-        X_train_for_teacher = X_train.to(next(teacher.parameters()).device)
-        X_test_for_teacher = X_test.to(next(teacher.parameters()).device)
+        teacher_device = next(teacher.parameters()).device
 
-        y_train = teacher(X_train_for_teacher).to(device_data)
-        y_test = teacher(X_test_for_teacher).to(device_data)
+        X_train_for_teacher = X_train if X_train.device == teacher_device else X_train.to(teacher_device)
+        X_test_for_teacher = X_test if X_test.device == teacher_device else X_test.to(teacher_device)
+
+        y_train = teacher(X_train_for_teacher)
+        y_test = teacher(X_test_for_teacher)
+
+        if y_train.device != device_data:
+            y_train = y_train.to(device_data)
+        if y_test.device != device_data:
+            y_test = y_test.to(device_data)
 
     return TeacherData(
         teacher=teacher,

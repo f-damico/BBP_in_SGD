@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Experiment driver: sequentially launch Teacher-Student trainings over (seeds x hyperparam grid).
+Experiment driver: one call == one seed == one GPU.
 
 Key behaviors:
-- One call == one GPU occupied (sequential runs).
-- Each run creates a unique folder containing:
+- A single invocation selects exactly one seed.
+- Within that selected seed, all hyperparameter combinations are run sequentially.
+- Each run creates a folder containing:
     - run_spec.json
-    - train_stdout_stderr.txt  (captured training output)
-    - output.npz               (produced by the training script)
-- Master launch log is appended *immediately at launch time* (flushed).
-- Supports sharding the run list: shard_id / num_shards.
+    - train_stdout_stderr.txt
+    - output.npz
+- A master launch log is appended immediately at launch time.
+- Supports resume and dry-run.
 
-Training script contract (we will implement next):
-    python -u training/train_teacher_student.py --run_spec <path/to/run_spec.json> --output_npz <path/to/output.npz>
-
-Config file: JSON (or YAML if PyYAML installed).
-See example at bottom of this message.
+Typical usage from PBS:
+    python -u src/phase_diagram/experiment.py \
+        --config src/phase_diagram/grid_phase_diagram.json \
+        --output_dir results/phase_diagram \
+        --train_script src/training/train_teacher_student.py \
+        --seed_index ${PBS_ARRAY_INDEX}
 """
 
 from __future__ import annotations
@@ -29,11 +31,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List
 
 
 def _load_config(path: Path) -> Dict[str, Any]:
-    if path.suffix.lower() in [".json"]:
+    if path.suffix.lower() == ".json":
         return json.loads(path.read_text())
     if path.suffix.lower() in [".yml", ".yaml"]:
         try:
@@ -60,7 +62,7 @@ def _cartesian_product(grid: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     keys = sorted(grid.keys())
     values_lists = [_as_list(grid[k]) for k in keys]
-    combos = []
+    combos: List[Dict[str, Any]] = []
     for values in itertools.product(*values_lists):
         combos.append({k: v for k, v in zip(keys, values)})
     return combos
@@ -72,7 +74,6 @@ def _stable_hash(obj: Any) -> str:
 
 
 def _now_str() -> str:
-    # filesystem-friendly timestamp
     return _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
@@ -82,17 +83,31 @@ def _write_launch_line(f, line: str) -> None:
     os.fsync(f.fileno())
 
 
-def _select_shard(items: List[Any], shard_id: int, num_shards: int) -> List[Tuple[int, Any]]:
-    """
-    Deterministic modulo-based sharding. Returns list of (global_index, item).
-    """
-    if num_shards <= 1:
-        return list(enumerate(items))
-    selected = []
-    for i, it in enumerate(items):
-        if (i % num_shards) == shard_id:
-            selected.append((i, it))
-    return selected
+def _select_seed(seeds: List[Any], seed_index: int | None, seed: int | None) -> int:
+    seeds_int = [int(s) for s in seeds]
+
+    if seed is not None and seed_index is not None:
+        raise ValueError("Pass only one of --seed_index or --seed, not both.")
+
+    if seed is not None:
+        seed = int(seed)
+        if seed not in seeds_int:
+            raise ValueError(f"Requested seed={seed} is not in config seeds={seeds_int}.")
+        return seed
+
+    if seed_index is not None:
+        if seed_index < 0 or seed_index >= len(seeds_int):
+            raise IndexError(
+                f"seed_index={seed_index} out of range for seeds list of length {len(seeds_int)}."
+            )
+        return seeds_int[seed_index]
+
+    if len(seeds_int) == 1:
+        return seeds_int[0]
+
+    raise ValueError(
+        "Config contains multiple seeds. Pass --seed_index <PBS_ARRAY_INDEX> or --seed <value>."
+    )
 
 
 def main() -> None:
@@ -101,7 +116,7 @@ def main() -> None:
     p.add_argument(
         "--train_script",
         type=str,
-        default="training/train_teacher_student.py",
+        default="src/training/train_teacher_student.py",
         help="Path to the training script to launch.",
     )
     p.add_argument(
@@ -116,8 +131,18 @@ def main() -> None:
         default=None,
         help="Master launch log txt path. Default: <output_dir>/launch_log.txt",
     )
-    p.add_argument("--shard_id", type=int, default=0, help="Shard index (0-based).")
-    p.add_argument("--num_shards", type=int, default=1, help="Total number of shards.")
+    p.add_argument(
+        "--seed_index",
+        type=int,
+        default=None,
+        help="Index inside config['seeds']; intended for PBS_ARRAY_INDEX.",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Explicit seed value; alternative to --seed_index.",
+    )
     p.add_argument(
         "--resume",
         action="store_true",
@@ -127,7 +152,7 @@ def main() -> None:
         "--max_runs",
         type=int,
         default=None,
-        help="Optional cap on number of runs executed in this driver.",
+        help="Optional cap on number of runs executed for this seed.",
     )
     p.add_argument("--dry_run", action="store_true", help="Print planned runs but do not execute.")
     args = p.parse_args()
@@ -140,64 +165,68 @@ def main() -> None:
 
     master_log_path = Path(args.master_log).resolve() if args.master_log else (out_base / "launch_log.txt")
 
-    # Required config sections
     architecture = cfg.get("architecture", {})
     dataset = cfg.get("dataset", {})
     seeds = _as_list(cfg.get("seeds", []))
     if not seeds:
         raise ValueError("Config must contain non-empty 'seeds' list.")
+
     grid = cfg.get("grid", {})
     if not grid:
         raise ValueError("Config must contain non-empty 'grid' dict with hyperparameter lists/scalars.")
 
-    # Build runs = seeds x hyperparam grid
+    selected_seed = _select_seed(seeds, args.seed_index, args.seed)
+
     grid_combos = _cartesian_product(grid)
-    all_runs: List[Dict[str, Any]] = []
-    for seed in seeds:
-        for hp in grid_combos:
-            run_spec = {
-                "seed": int(seed),
-                "architecture": architecture,
-                "dataset": dataset,
-                "train": hp,
-                # keep a pointer to the config used
-                "source_config": str(cfg_path),
-            }
-            all_runs.append(run_spec)
-
-    shard_runs = _select_shard(all_runs, args.shard_id, args.num_shards)
     if args.max_runs is not None:
-        shard_runs = shard_runs[: args.max_runs]
+        grid_combos = grid_combos[: args.max_runs]
 
-    # Open master log in line-buffered mode
+    seed_dir = out_base / f"seed_{selected_seed:04d}"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+
     with open(master_log_path, "a", buffering=1, encoding="utf-8") as mlog:
         header = (
-            f"# --- DRIVER START { _now_str() } "
-            f"config={cfg_path} shard={args.shard_id}/{args.num_shards} "
-            f"train_script={args.train_script} ---"
+            f"# --- DRIVER START {_now_str()} "
+            f"config={cfg_path} seed={selected_seed} "
+            f"seed_index={args.seed_index} train_script={args.train_script} ---"
         )
         _write_launch_line(mlog, header)
 
         if args.dry_run:
-            _write_launch_line(mlog, f"# DRY RUN: would execute {len(shard_runs)} runs.")
-            for global_i, spec in shard_runs:
-                rid = f"s{args.shard_id}of{args.num_shards}_i{global_i:06d}_{_stable_hash(spec)}"
+            _write_launch_line(mlog, f"# DRY RUN: would execute {len(grid_combos)} runs for seed={selected_seed}.")
+            for local_i, hp in enumerate(grid_combos):
+                spec = {
+                    "seed": selected_seed,
+                    "architecture": architecture,
+                    "dataset": dataset,
+                    "train": hp,
+                    "source_config": str(cfg_path),
+                }
+                rid = f"seed{selected_seed:04d}_i{local_i:06d}_{_stable_hash(spec)}"
                 _write_launch_line(
                     mlog,
-                    f"[DRY] launch run_id={rid} seed={spec['seed']} train={spec['train']}",
+                    f"[DRY] launch run_id={rid} seed={selected_seed} train={hp}",
                 )
             return
 
-        _write_launch_line(mlog, f"# Will execute {len(shard_runs)} runs in this shard.")
+        _write_launch_line(mlog, f"# Will execute {len(grid_combos)} runs for seed={selected_seed}.")
 
         train_script = Path(args.train_script).resolve()
         if not train_script.exists():
             raise FileNotFoundError(f"Training script not found: {train_script}")
 
-        for global_i, spec in shard_runs:
+        for local_i, hp in enumerate(grid_combos):
+            spec = {
+                "seed": selected_seed,
+                "architecture": architecture,
+                "dataset": dataset,
+                "train": hp,
+                "source_config": str(cfg_path),
+            }
+
             run_hash = _stable_hash(spec)
-            run_id = f"{_now_str()}_s{args.shard_id}of{args.num_shards}_i{global_i:06d}_{run_hash}"
-            run_dir = out_base / run_id
+            run_id = f"seed{selected_seed:04d}_i{local_i:06d}_{run_hash}"
+            run_dir = seed_dir / run_id
             run_dir.mkdir(parents=True, exist_ok=True)
 
             run_spec_path = run_dir / "run_spec.json"
@@ -206,21 +235,18 @@ def main() -> None:
             out_npz = run_dir / "output.npz"
             train_log = run_dir / "train_stdout_stderr.txt"
 
-            # Resume behavior
             if args.resume and out_npz.exists():
                 _write_launch_line(
                     mlog,
-                    f"[SKIP] {run_id} (output exists) seed={spec['seed']} train={spec['train']}",
+                    f"[SKIP] {run_id} (output exists) seed={selected_seed} train={hp}",
                 )
                 continue
 
-            # IMPORTANT: log launch *before* blocking on training completion
             _write_launch_line(
                 mlog,
-                f"[LAUNCH] {run_id} seed={spec['seed']} train={spec['train']} run_spec={run_spec_path}",
+                f"[LAUNCH] {run_id} seed={selected_seed} train={hp} run_spec={run_spec_path}",
             )
 
-            # Run training as separate process. Use -u for unbuffered output, so logs update live.
             cmd = [
                 sys.executable,
                 "-u",
@@ -231,7 +257,7 @@ def main() -> None:
                 str(out_npz),
             ]
 
-            with open(train_log, "a", buffering=1, encoding="utf-8") as tlog:
+            with open(train_log, "w", buffering=1, encoding="utf-8") as tlog:
                 tlog.write(f"# CMD: {' '.join(cmd)}\n")
                 tlog.flush()
 
@@ -248,14 +274,13 @@ def main() -> None:
                     mlog,
                     f"[FAIL] {run_id} returncode={proc.returncode} (see {train_log})",
                 )
-                # continue to next run (do not kill the whole shard by default)
             else:
                 _write_launch_line(
                     mlog,
                     f"[DONE] {run_id} (output={out_npz})",
                 )
 
-        _write_launch_line(mlog, f"# --- DRIVER END { _now_str() } ---")
+        _write_launch_line(mlog, f"# --- DRIVER END {_now_str()} seed={selected_seed} ---")
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from models.teacher_student_mlp import TeacherStudentMLP, init_linear_normal_scaled  # type: ignore
-from experiments.phase_diagram.make_teacher_and_data import make_teacher_and_data  # type: ignore
+from phase_diagram.make_teacher_and_data import make_teacher_and_data  # type: ignore
 
 
 # -----------------------------------------------------------------------------

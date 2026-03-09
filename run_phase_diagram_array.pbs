@@ -1,23 +1,11 @@
 #!/bin/bash
 #PBS -N ts_phase_diag
-#PBS -J 0-9
+#PBS -q gpuq-longrun
+#PBS -J 0-19
 #PBS -l select=1:ncpus=4:ngpus=1:mem=24gb
-#PBS -l walltime=24:00:00
+#PBS -l walltime=100:00:00
 #PBS -j oe
 #PBS -o pbs_logs/
-
-# -----------------------------------------------------------------------------
-# PBS array launcher for the teacher-student phase-diagram experiment.
-#
-# IMPORTANT:
-# 1) Keep the array range consistent with NUM_SHARDS below.
-#    Example: if NUM_SHARDS=10, use  #PBS -J 0-9
-# 2) Adapt module/conda lines to your cluster.
-# 3) Paths are written assuming the repo contains:
-#       experiments/phase_diagram/experiment.py
-#       experiments/phase_diagram/grid_phase_diagram.json
-#       training/train_teacher_student.py
-# -----------------------------------------------------------------------------
 
 set -euo pipefail
 
@@ -25,62 +13,66 @@ set -euo pipefail
 # User-editable settings
 # -------------------------------
 REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
-CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiments/phase_diagram/grid_phase_diagram.json}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/phase_diagram/grid_phase_diagram.json}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_teacher_student.py}"
-OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/results/phase_diagram}"
+
+# Name of this full experiment batch
+RUN_NAME="${RUN_NAME:-paper_exact_repro}"
+
+# All outputs for this submission go here
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/results/phase_diagram/$RUN_NAME}"
 MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
-NUM_SHARDS="${NUM_SHARDS:-10}"
+
 MAX_RUNS="${MAX_RUNS:-}"
 USE_RESUME="${USE_RESUME:-1}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-myenc}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # -------------------------------
 # Basic job info
 # -------------------------------
-SHARD_ID="${PBS_ARRAY_INDEX:-0}"
+SEED_INDEX="${PBS_ARRAY_INDEX:-0}"
 JOB_ID="${PBS_JOBID:-no_jobid}"
 HOSTNAME_NOW="$(hostname)"
 START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 
-mkdir -p "$REPO_DIR/pbs_logs"
 mkdir -p "$OUTPUT_DIR"
+mkdir -p "$REPO_DIR/pbs_logs"
 
 cd "$REPO_DIR"
 
 # -------------------------------
 # Modules / environment
-# Adapt these lines to your cluster
+# Adapt to your cluster if needed
 # -------------------------------
 if command -v module >/dev/null 2>&1; then
     module purge || true
-    # Examples: uncomment/adapt what you actually use on the cluster
+    # Example:
     # module load cuda/12.1
     # module load anaconda3
-    # module load python/3.10
 fi
 
-# If you use conda through a module-load system, adapt this block.
-# Examples:
-#   source ~/.bashrc
-#   conda activate myenv
-# or
-#   source /path/to/miniconda3/etc/profile.d/conda.sh
-#   conda activate myenv
+# Prefer conda.sh when available
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate "$CONDA_ENV_NAME"
+else
+    source activate "$CONDA_ENV_NAME"
+fi
 
-# -------------------------------
-# Sanity checks written to a per-array-job log
-# -------------------------------
-ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_shard_${SHARD_ID}.log"
+ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_seedindex_${SEED_INDEX}.log"
+
 {
     echo "[START] $START_TS"
     echo "[INFO] hostname=$HOSTNAME_NOW"
     echo "[INFO] repo_dir=$REPO_DIR"
     echo "[INFO] config_path=$CONFIG_PATH"
     echo "[INFO] train_script=$TRAIN_SCRIPT"
+    echo "[INFO] run_name=$RUN_NAME"
     echo "[INFO] output_dir=$OUTPUT_DIR"
     echo "[INFO] master_log=$MASTER_LOG"
-    echo "[INFO] shard_id=$SHARD_ID"
-    echo "[INFO] num_shards=$NUM_SHARDS"
+    echo "[INFO] seed_index=$SEED_INDEX"
+    echo "[INFO] conda_env_name=$CONDA_ENV_NAME"
     echo "[INFO] python_bin=$PYTHON_BIN"
     echo "[INFO] pwd=$(pwd)"
     echo "[INFO] which_python=$(command -v "$PYTHON_BIN" || true)"
@@ -102,8 +94,28 @@ if [ ! -f "$TRAIN_SCRIPT" ]; then
     exit 1
 fi
 
-if [ ! -f "$REPO_DIR/experiments/phase_diagram/experiment.py" ]; then
-    echo "[ERROR] Missing experiment driver: $REPO_DIR/experiments/phase_diagram/experiment.py" | tee -a "$ARRAY_LOG"
+if [ ! -f "$REPO_DIR/src/phase_diagram/experiment.py" ]; then
+    echo "[ERROR] Missing experiment driver: $REPO_DIR/src/phase_diagram/experiment.py" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+# -------------------------------
+# Check how many seeds are in the config
+# -------------------------------
+N_SEEDS="$($PYTHON_BIN - <<'PY' "$CONFIG_PATH"
+import json, sys
+with open(sys.argv[1], "r") as f:
+    cfg = json.load(f)
+seeds = cfg.get("seeds", [])
+print(len(seeds))
+PY
+)"
+
+echo "[INFO] n_seeds_in_config=$N_SEEDS" | tee -a "$ARRAY_LOG"
+
+if [ "$SEED_INDEX" -ge "$N_SEEDS" ]; then
+    echo "[ERROR] PBS_ARRAY_INDEX=$SEED_INDEX but config contains only $N_SEEDS seeds." | tee -a "$ARRAY_LOG"
+    echo "[ERROR] Fix the array range in '#PBS -J ...' so it matches the seeds list." | tee -a "$ARRAY_LOG"
     exit 1
 fi
 
@@ -111,13 +123,12 @@ fi
 # Build command
 # -------------------------------
 CMD=(
-    "$PYTHON_BIN" -u "$REPO_DIR/experiments/phase_diagram/experiment.py"
+    "$PYTHON_BIN" -u "$REPO_DIR/src/phase_diagram/experiment.py"
     --config "$CONFIG_PATH"
     --output_dir "$OUTPUT_DIR"
     --train_script "$TRAIN_SCRIPT"
     --master_log "$MASTER_LOG"
-    --shard_id "$SHARD_ID"
-    --num_shards "$NUM_SHARDS"
+    --seed_index "$SEED_INDEX"
 )
 
 if [ "$USE_RESUME" = "1" ]; then
@@ -130,7 +141,7 @@ fi
 
 {
     echo "[CMD] ${CMD[*]}"
-    echo "[RUN] launching shard ${SHARD_ID}/${NUM_SHARDS}"
+    echo "[RUN] launching run_name=${RUN_NAME} seed_index=${SEED_INDEX}"
 } | tee -a "$ARRAY_LOG"
 
 "${CMD[@]}" 2>&1 | tee -a "$ARRAY_LOG"
@@ -140,3 +151,4 @@ END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "[END] $END_TS return_code=$RET" | tee -a "$ARRAY_LOG"
 
 exit $RET
+
