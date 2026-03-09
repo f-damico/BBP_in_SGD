@@ -13,7 +13,6 @@ import numpy as np
 def npz_to_dict(npz_path: Path) -> Dict[str, Any]:
     """
     Load all arrays from an .npz into a Python dict.
-    Scalars are converted to Python scalars when possible.
     """
     out: Dict[str, Any] = {}
     with np.load(npz_path, allow_pickle=True) as data:
@@ -29,12 +28,6 @@ def npz_to_dict(npz_path: Path) -> Dict[str, Any]:
 
 
 def collect_results(results_dir: Path) -> Dict[str, Dict[str, Any]]:
-    """
-    Scan a results directory like:
-        results/phase_diagram/<RUN_NAME>/
-
-    and collect all runs into a dict keyed by run_id.
-    """
     all_results: Dict[str, Dict[str, Any]] = {}
 
     run_spec_paths = sorted(results_dir.rglob("run_spec.json"))

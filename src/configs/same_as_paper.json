@@ -8,7 +8,7 @@
     "sigma2_w": 1.0
   },
   "dataset": {
-    "n_train": 1024,
+    "n_train": 4000,
     "n_test": 8192,
     "x_mean": 0.0,
     "x_std": 1.0

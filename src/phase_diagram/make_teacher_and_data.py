@@ -1,15 +1,8 @@
 #!/usr/bin/env python3
 """
-Utilities to create:
+Create
   1) a TEACHER MLP (no bias, tanh activations),
   2) a corresponding teacher-generated regression dataset (X_train, y_train, X_test, y_test).
-
-Paper conventions implemented:
-- Teacher weights:  W_ij^(l) ~ N(0, 1 / n_{l-1})
-- Inputs:           x_i^alpha ~ N(0, 1)
-- Teacher/student architecture is the same (for this experiment series).
-
-This module is meant to be imported by experiment scripts (and/or training scripts).
 """
 
 from __future__ import annotations
@@ -24,10 +17,7 @@ import torch
 import torch.nn as nn
 
 
-# ----------------------------
-# Config loading
-# ----------------------------
-
+# Load the file config
 def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
     path = Path(path)
     if path.suffix.lower() == ".json":
@@ -44,29 +34,17 @@ def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
     raise ValueError(f"Unsupported config extension: {path.suffix}")
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
-
 def _make_generator(device: Union[str, torch.device], seed: int) -> torch.Generator:
-    """
-    Create a torch random generator on the requested device.
-    This is required when initializing / sampling directly on CUDA tensors.
-    """
     device = torch.device(device)
     gen = torch.Generator(device=device)
     gen.manual_seed(int(seed))
     return gen
 
 
-# ----------------------------
-# Teacher model builder (fallback)
-# Prefer using your centralized models/ file if available.
-# ----------------------------
-
+# Teacher model builder 
 def _init_linear_normal_scaled(linear: nn.Linear, sigma2_w: float, gen: torch.Generator) -> None:
     """
-    Initialize: W_ij ~ N(0, sigma2_w / n_in), no bias.
+    Initialize: correct variance, no bias.
     """
     if linear.bias is not None:
         raise ValueError("This experiment assumes no bias. Use bias=False.")
@@ -78,8 +56,7 @@ def _init_linear_normal_scaled(linear: nn.Linear, sigma2_w: float, gen: torch.Ge
 
 class _MLPNoBiasTanh(nn.Module):
     """
-    Simple MLP with tanh between Linear layers, last layer linear output.
-    No biases (paper setup).
+    Simple MLP with tanh between Linear layers, last layer linear output, No biases   
     """
     def __init__(self, input_dim: int, hidden_dims: list[int], output_dim: int):
         super().__init__()
@@ -108,20 +85,15 @@ def build_teacher(
     device: Union[str, torch.device],
     dtype: torch.dtype,
 ) -> nn.Module:
-    """
-    Creates teacher MLP and initializes weights with N(0, sigma2_w_teacher / n_in).
-    Default paper teacher: sigma2_w_teacher = 1.
-    """
+    
     device = torch.device(device)
 
-    # Build teacher directly on the requested device (GPU in your case)
     teacher = _MLPNoBiasTanh(
         input_dim=input_dim,
         hidden_dims=hidden_dims,
         output_dim=output_dim,
     ).to(device=device, dtype=dtype)
 
-    # Generator must live on the same device as the weights
     gen = _make_generator(device=device, seed=seed_teacher)
 
     for linear in teacher.linears:
@@ -135,10 +107,7 @@ def build_teacher(
     return teacher
 
 
-# ----------------------------
 # Data generation
-# ----------------------------
-
 @dataclass(frozen=True)
 class TeacherData:
     teacher: nn.Module
@@ -157,11 +126,7 @@ def make_teacher_and_data(
     dtype: torch.dtype = torch.float32,
 ) -> TeacherData:
     """
-    Build teacher + dataset using a config like same_as_paper.json.
-
-    Reproducibility:
-    - teacher seed = seed
-    - data seed    = seed + 10_000  (decouples teacher weights and sampled inputs)
+    Build teacher + dataset using a config .json
     """
     cfg = load_json_or_yaml(config_path)
 
@@ -176,10 +141,8 @@ def make_teacher_and_data(
     n_train = int(ds["n_train"])
     n_test = int(ds["n_test"])
 
-    # Paper teacher: W ~ N(0, 1/n_in)  -> sigma2_w_teacher = 1
     sigma2_w_teacher = float(teacher_cfg.get("sigma2_w", 1.0))
 
-    # Inputs: x ~ N(0, 1) (paper)
     x_mean = float(ds.get("x_mean", 0.0))
     x_std = float(ds.get("x_std", 1.0))
 
@@ -196,8 +159,7 @@ def make_teacher_and_data(
         dtype=dtype,
     )
 
-    # Data generator must be on the same device as the sampled tensors
-    gen_data = _make_generator(device=device_data, seed=int(seed) + 10_000)
+    gen_data = _make_generator(device=device_data, seed=int(seed))
 
     X_train = (
         torch.randn(
@@ -241,10 +203,6 @@ def make_teacher_and_data(
 
 
 def save_dataset_npz(path: Union[str, Path], data: TeacherData) -> None:
-    """
-    Optional helper: save dataset (and only dataset) to a compressed npz.
-    Teacher parameters are NOT saved here.
-    """
     import numpy as np
 
     path = Path(path)

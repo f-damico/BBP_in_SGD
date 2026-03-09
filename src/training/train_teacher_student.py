@@ -1,19 +1,6 @@
 #!/usr/bin/env python3
 """
 Training script for the teacher-student phase-diagram experiment.
-
-Expected CLI:
-    python -u training/train_teacher_student.py \
-        --run_spec path/to/run_spec.json \
-        --output_npz path/to/output.npz
-
-This script is intentionally simple and focused on the current experiment:
-- regression with MSE loss;
-- teacher and dataset built from make_teacher_and_data.py;
-- student has same architecture as teacher;
-- first and last linear layers fixed, middle layer trainable (paper case),
-  unless explicit trainable layer indices are provided in run_spec['train'].
-
 Outputs:
 - output_npz: compressed NumPy file with loss trajectories + metadata;
 - metrics_log.txt next to output_npz: plain-text training log.
@@ -33,11 +20,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-
-# -----------------------------------------------------------------------------
-# Imports from repo root
-# -----------------------------------------------------------------------------
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -45,10 +27,6 @@ if str(REPO_ROOT) not in sys.path:
 from models.teacher_student_mlp import TeacherStudentMLP, init_linear_normal_scaled  # type: ignore
 from phase_diagram.make_teacher_and_data import make_teacher_and_data  # type: ignore
 
-
-# -----------------------------------------------------------------------------
-# Helpers
-# -----------------------------------------------------------------------------
 
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
@@ -80,7 +58,6 @@ def write_log_line(handle, text: str) -> None:
     print(text, flush=True)
 
 
-
 def infer_trainable_layer_indices(num_linear_layers: int, train_cfg: Dict[str, Any]) -> List[int]:
     if "trainable_layer_indices" in train_cfg:
         out = [int(i) for i in train_cfg["trainable_layer_indices"]]
@@ -88,7 +65,7 @@ def infer_trainable_layer_indices(num_linear_layers: int, train_cfg: Dict[str, A
             raise ValueError("trainable_layer_indices cannot be empty.")
         return out
 
-    # Default paper case: exactly 3 linear layers, only the middle one is trainable.
+    # Default paper case
     if num_linear_layers == 3:
         return [1]
 
@@ -98,14 +75,26 @@ def infer_trainable_layer_indices(num_linear_layers: int, train_cfg: Dict[str, A
     )
 
 
-
 def get_sigma2_w_trainable(train_cfg: Dict[str, Any]) -> float:
-    if "sigma2_w" in train_cfg:
-        return float(train_cfg["sigma2_w"])
-    if "sigma_w" in train_cfg:
-        return float(train_cfg["sigma_w"]) ** 2
-    raise ValueError("Training config must contain either 'sigma2_w' or 'sigma_w'.")
+    if "inv_sigma_w" in train_cfg:
+        inv_sigma_w = float(train_cfg["inv_sigma_w"])
+        if inv_sigma_w <= 0:
+            raise ValueError("inv_sigma_w must be positive.")
+        return 1.0 / (inv_sigma_w ** 2)
 
+    if "sigma_w" in train_cfg:
+        sigma_w = float(train_cfg["sigma_w"])
+        if sigma_w <= 0:
+            raise ValueError("sigma_w must be positive.")
+        return sigma_w ** 2
+
+    if "sigma2_w" in train_cfg:
+        sigma2_w = float(train_cfg["sigma2_w"])
+        if sigma2_w <= 0:
+            raise ValueError("sigma2_w must be positive.")
+        return sigma2_w
+
+    raise ValueError("Training config must contain one of: inv_sigma_w, sigma_w, sigma2_w.")
 
 
 def get_eval_steps(train_cfg: Dict[str, Any], num_updates: int) -> List[int]:
@@ -124,7 +113,6 @@ def get_eval_steps(train_cfg: Dict[str, Any], num_updates: int) -> List[int]:
     return steps
 
 
-
 def choose_device(train_cfg: Dict[str, Any]) -> torch.device:
     device_str = train_cfg.get("device", None)
     if device_str is not None:
@@ -132,14 +120,8 @@ def choose_device(train_cfg: Dict[str, Any]) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-
-def materialize_teacher_data_config(run_spec: Dict[str, Any], run_dir: Path) -> Path:
+def create_teacher_data_config(run_spec: Dict[str, Any], run_dir: Path) -> Path:
     """
-    Current situation:
-    - make_teacher_and_data.py expects a config file path;
-    - experiment.py currently writes architecture + dataset directly into run_spec.
-
-    So here we support both:
     1) if a config path is already present in run_spec, use it;
     2) otherwise create a temporary config JSON inside the run folder.
     """
@@ -157,8 +139,7 @@ def materialize_teacher_data_config(run_spec: Dict[str, Any], run_dir: Path) -> 
     return out_path
 
 
-
-def build_student_from_teacher_like(
+def build_student_from_teacher(
     teacher: nn.Module,
     architecture: Dict[str, Any],
     *,
@@ -168,10 +149,6 @@ def build_student_from_teacher_like(
     device: torch.device,
     dtype: torch.dtype,
 ) -> TeacherStudentMLP:
-    """
-    Build a TeacherStudentMLP student even if the teacher object comes from the
-    fallback MLP class in make_teacher_and_data.py.
-    """
     student = TeacherStudentMLP(
         input_dim=int(architecture["input_dim"]),
         hidden_dims=[int(h) for h in architecture["hidden_dims"]],
@@ -202,11 +179,6 @@ def compute_mse(model: nn.Module, x: torch.Tensor, y: torch.Tensor, device: torc
     return float(loss.detach().cpu().item())
 
 
-# -----------------------------------------------------------------------------
-# Main
-# -----------------------------------------------------------------------------
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_spec", type=str, required=True, help="Path to run_spec.json")
@@ -228,6 +200,10 @@ def main() -> None:
     lr = float(train_cfg["lr"])
     batch_size = int(train_cfg["batch_size"])
     sigma2_w_trainable = get_sigma2_w_trainable(train_cfg)
+    if "inv_sigma_w" in train_cfg:
+        inv_sigma_w = float(train_cfg["inv_sigma_w"])
+    else:
+        inv_sigma_w = 1.0 / np.sqrt(sigma2_w_trainable)
     eval_steps = get_eval_steps(train_cfg, num_updates)
     device = choose_device(train_cfg)
     dtype = torch.float64 if bool(train_cfg.get("use_float64", False)) else torch.float32
@@ -236,18 +212,18 @@ def main() -> None:
         train_cfg=train_cfg,
     )
 
-    # Deterministic seeds for different parts
     seed_teacher_data = seed
-    seed_student = seed + 20_000
-    seed_batches = seed + 30_000
+    seed_student = seed 
+    seed_batches = seed 
     set_global_seed(seed)
 
-    teacher_data_config = materialize_teacher_data_config(run_spec, run_dir)
+    teacher_data_config = create_teacher_data_config(run_spec, run_dir)
 
     with open(metrics_log_path, "a", buffering=1, encoding="utf-8") as logf:
         write_log_line(logf, f"[START] run_spec={run_spec_path}")
         write_log_line(logf, f"[INFO] device={device} dtype={dtype}")
         write_log_line(logf, f"[INFO] seed={seed} lr={lr} batch_size={batch_size} num_updates={num_updates}")
+        write_log_line(logf, f"[INFO] inv_sigma_w={inv_sigma_w}")
         write_log_line(logf, f"[INFO] sigma2_w_trainable={sigma2_w_trainable}")
         write_log_line(logf, f"[INFO] trainable_layer_indices={list(trainable_layer_indices)}")
         write_log_line(logf, f"[INFO] eval_steps={eval_steps}")
@@ -261,7 +237,7 @@ def main() -> None:
             dtype=dtype,
         )
 
-        student = build_student_from_teacher_like(
+        student = build_student_from_teacher(
             td.teacher,
             architecture,
             trainable_layer_indices=trainable_layer_indices,
@@ -344,6 +320,7 @@ def main() -> None:
             "source_config": run_spec.get("source_config", None),
             "architecture": architecture,
             "dataset": run_spec.get("dataset", None),
+            "inv_sigma_w": inv_sigma_w,
         }
 
         np.savez_compressed(

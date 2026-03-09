@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-Teacher-student MLP model definition for the phase-diagram experiments.
-
-Design goals:
-- simple and close to the paper setup;
-- configurable widths through input_dim / hidden_dims / output_dim;
-- fixed activations: tanh on all hidden layers, linear output;
-- no bias terms;
-- weight initialisation: W_ij ~ N(0, sigma2_w / n_in);
-- easy construction of:
-    1) a TEACHER with all layers sampled,
-    2) a STUDENT with first/last layers copied from teacher and selected layers trainable.
-
-For the paper-reproduction experiment, the intended use is:
-- same architecture for teacher and student;
-- only the middle layer trainable;
-- first and last layers fixed to the teacher values.
-"""
 
 from __future__ import annotations
 
@@ -27,18 +9,14 @@ import json
 import torch
 import torch.nn as nn
 
-
-# -----------------------------------------------------------------------------
-# Config loading
-# -----------------------------------------------------------------------------
-
+# Load config
 def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
     path = Path(path)
     if path.suffix.lower() == ".json":
         return json.loads(path.read_text(encoding="utf-8"))
     if path.suffix.lower() in [".yml", ".yaml"]:
         try:
-            import yaml  # type: ignore
+            import yaml  
         except ImportError as e:
             raise RuntimeError(
                 "YAML config requested but PyYAML is not installed. "
@@ -48,23 +26,13 @@ def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
     raise ValueError(f"Unsupported config extension: {path.suffix}")
 
 
-# -----------------------------------------------------------------------------
-# Initialisation helper
-# -----------------------------------------------------------------------------
-
 def init_linear_normal_scaled(
     linear: nn.Linear,
     sigma2_w: float,
     generator=None,
 ) -> None:
     """
-    Initialise a linear layer with
-        W_ij ~ N(0, sigma2_w / n_in)
-    and no bias.
-
-    The 'generator' argument is kept only for compatibility with the rest
-    of the codebase, but it is intentionally ignored to avoid CPU/CUDA
-    generator mismatch errors on GPU.
+    Initialise a linear layer with no bias and correct variance.
     """
     if linear.bias is not None:
         raise ValueError("This model is defined with bias=False only.")
@@ -88,10 +56,7 @@ def set_seed_everywhere(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-# -----------------------------------------------------------------------------
 # Model definition
-# -----------------------------------------------------------------------------
-
 class TeacherStudentMLP(nn.Module):
     """
     MLP with:
@@ -99,10 +64,6 @@ class TeacherStudentMLP(nn.Module):
     - tanh after every hidden linear layer,
     - linear output,
     - no biases.
-
-    The linear layers are stored in self.linears.
-    Layer index convention:
-        0, 1, ..., L-1   where L = number of linear layers.
     """
 
     def __init__(
@@ -154,8 +115,7 @@ class TeacherStudentMLP(nn.Module):
         seed: int,
     ) -> None:
         """
-        Initialise every linear layer with:
-            W_ij ~ N(0, sigma2_w / n_in).
+        Initialise with correct variance
         """
         set_seed_everywhere(seed)
         for layer in self.linears:
@@ -199,10 +159,7 @@ class TeacherStudentMLP(nn.Module):
             raise ValueError("Teacher and student must have the same architecture.")
 
 
-# -----------------------------------------------------------------------------
-# Builders used by experiment/training files
-# -----------------------------------------------------------------------------
-
+# Create model from config file
 def build_model_from_config(
     config_path: Union[str, Path],
     *,
@@ -226,10 +183,6 @@ def build_teacher_from_config(
     device: Union[str, torch.device] = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> TeacherStudentMLP:
-    """
-    Build the teacher using the architecture from config and
-    teacher variance sigma2_w from config['teacher']['sigma2_w'].
-    """
     cfg = load_json_or_yaml(config_path)
     sigma2_w_teacher = float(cfg.get("teacher", {}).get("sigma2_w", 1.0))
 
@@ -247,18 +200,7 @@ def build_student_from_teacher(
     seed: int,
 ) -> TeacherStudentMLP:
     """
-    Build a student with the same architecture as the teacher.
-
-    Procedure:
-    1) copy all teacher layers;
-    2) re-initialise only the selected trainable layers using
-           W_ij ~ N(0, sigma2_w_trainable / n_in);
-    3) freeze all other layers.
-
-    For the paper experiment with 3 linear layers, use:
-        trainable_layer_indices = [1]
-    so that the first and last layers are fixed to the teacher and only the
-    middle one is trained.
+    Build a student with the same architecture as the teacher, but changes trainable layers selected
     """
     student = TeacherStudentMLP(
         input_dim=teacher.input_dim,
@@ -276,19 +218,13 @@ def build_student_from_teacher(
     return student
 
 
-# -----------------------------------------------------------------------------
-# Small helpers for the exact paper setup
-# -----------------------------------------------------------------------------
-
 def get_middle_layer_index(model: TeacherStudentMLP) -> int:
     """
     Return the central linear-layer index.
-
-    For the exact paper setup (3 linear layers), this is 1.
     """
     if model.num_linear_layers % 2 == 0:
         raise ValueError(
-            "Middle layer is only uniquely defined for an odd number of linear layers."
+            "Select an even number of layers"
         )
     return model.num_linear_layers // 2
 
@@ -299,10 +235,6 @@ def build_paper_student_from_teacher(
     sigma2_w_middle: float,
     seed: int,
 ) -> TeacherStudentMLP:
-    """
-    Convenience wrapper for the exact experiment in the paper:
-    only the middle layer is trainable.
-    """
     middle_idx = get_middle_layer_index(teacher)
     return build_student_from_teacher(
         teacher,
