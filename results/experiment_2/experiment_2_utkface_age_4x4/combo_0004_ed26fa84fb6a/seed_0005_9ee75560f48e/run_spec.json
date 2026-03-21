@@ -1,0 +1,46 @@
+{
+  "architecture": {
+    "activation": "relu",
+    "bias": true,
+    "conv_channels": [
+      32,
+      64,
+      128
+    ],
+    "input_channels": 3,
+    "mlp_hidden_dims": [
+      64
+    ],
+    "output_dim": 1
+  },
+  "combo_hash": "ed26fa84fb6a",
+  "combo_index": 4,
+  "dataset": {
+    "image_size": 64,
+    "max_samples": 20000,
+    "name": "UTKFace",
+    "num_workers": 4,
+    "root": "data/UTKFace",
+    "split_seed": 12345,
+    "train_fraction": 0.8
+  },
+  "seed": 5,
+  "source_config": "/mnt/beegfs/2a/mb12724/BBP_in_SGD/src/experiment_2/utkface_age_phase_diagram.json",
+  "train": {
+    "batch_size": 128,
+    "epochs": 20,
+    "eval_epochs": [
+      1,
+      2,
+      5,
+      10,
+      15,
+      20
+    ],
+    "lr": 0.001,
+    "momentum": 0.0,
+    "optimizer": "sgd",
+    "sigma2_w": 8.0,
+    "weight_decay": 0.0
+  }
+}

@@ -1,0 +1,160 @@
+#!/bin/bash
+#PBS -N age_phase_diag
+#PBS -q gpuq-longrun
+#PBS -J 0-15
+#PBS -l select=1:ncpus=4:ngpus=1:mem=24gb
+#PBS -l walltime=24:00:00
+#PBS -j oe
+#PBS -o pbs_logs/
+
+set -euo pipefail
+
+# --------------------------------
+# User-editable settings
+# --------------------------------
+REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
+
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
+DRIVER_SCRIPT="${DRIVER_SCRIPT:-$REPO_DIR/src/experiment_2/experiment_age_phase_diagram.py}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
+
+RUN_NAME="${RUN_NAME:-experiment_2_utkface_age_4x4}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/results/experiment_2/$RUN_NAME}"
+MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
+
+USE_RESUME="${USE_RESUME:-1}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-theory-lm}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+# --------------------------------
+# Basic job info
+# --------------------------------
+COMBO_INDEX="${PBS_ARRAY_INDEX:-0}"
+JOB_ID="${PBS_JOBID:-no_jobid}"
+HOSTNAME_NOW="$(hostname)"
+START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+mkdir -p "$OUTPUT_DIR"
+mkdir -p "$REPO_DIR/pbs_logs"
+
+cd "$REPO_DIR"
+
+# --------------------------------
+# Modules / environment
+# Adapt if needed for your cluster
+# --------------------------------
+if command -v module >/dev/null 2>&1; then
+    module purge || true
+    # Example:
+    # module load cuda/12.1
+    # module load anaconda3
+fi
+
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate "$CONDA_ENV_NAME"
+else
+    source activate "$CONDA_ENV_NAME"
+fi
+
+ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_combo_${COMBO_INDEX}.log"
+
+{
+    echo "[START] $START_TS"
+    echo "[INFO] hostname=$HOSTNAME_NOW"
+    echo "[INFO] repo_dir=$REPO_DIR"
+    echo "[INFO] config_path=$CONFIG_PATH"
+    echo "[INFO] driver_script=$DRIVER_SCRIPT"
+    echo "[INFO] train_script=$TRAIN_SCRIPT"
+    echo "[INFO] run_name=$RUN_NAME"
+    echo "[INFO] output_dir=$OUTPUT_DIR"
+    echo "[INFO] master_log=$MASTER_LOG"
+    echo "[INFO] combo_index=$COMBO_INDEX"
+    echo "[INFO] conda_env_name=$CONDA_ENV_NAME"
+    echo "[INFO] python_bin=$PYTHON_BIN"
+    echo "[INFO] pwd=$(pwd)"
+    echo "[INFO] which_python=$(command -v "$PYTHON_BIN" || true)"
+    echo "[INFO] python_version=$($PYTHON_BIN --version 2>&1 || true)"
+    echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[INFO] nvidia-smi:"
+        nvidia-smi || true
+    fi
+} | tee -a "$ARRAY_LOG"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "[ERROR] Missing config file: $CONFIG_PATH" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ ! -f "$DRIVER_SCRIPT" ]; then
+    echo "[ERROR] Missing driver script: $DRIVER_SCRIPT" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ ! -f "$TRAIN_SCRIPT" ]; then
+    echo "[ERROR] Missing training script: $TRAIN_SCRIPT" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+# --------------------------------
+# Check number of hyperparameter combinations
+# --------------------------------
+N_COMBOS="$($PYTHON_BIN - <<'PY' "$CONFIG_PATH"
+import json
+import sys
+
+with open(sys.argv[1], "r") as f:
+    cfg = json.load(f)
+
+grid = cfg.get("grid", {})
+if not grid:
+    print(0)
+    raise SystemExit(0)
+
+count = 1
+for key, vals in grid.items():
+    vals = vals if isinstance(vals, list) else [vals]
+    count *= len(vals)
+
+print(count)
+PY
+)"
+
+echo "[INFO] n_hyperparameter_combinations=$N_COMBOS" | tee -a "$ARRAY_LOG"
+
+if [ "$COMBO_INDEX" -ge "$N_COMBOS" ]; then
+    echo "[ERROR] PBS_ARRAY_INDEX=$COMBO_INDEX but config contains only $N_COMBOS combinations." | tee -a "$ARRAY_LOG"
+    echo "[ERROR] Fix '#PBS -J ...' so it matches the grid size." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+# --------------------------------
+# Launch one hyperparameter point on this GPU
+# Seeds are replicated sequentially inside the driver
+# --------------------------------
+CMD=(
+    "$PYTHON_BIN" -u "$DRIVER_SCRIPT"
+    --config "$CONFIG_PATH"
+    --output_dir "$OUTPUT_DIR"
+    --train_script "$TRAIN_SCRIPT"
+    --master_log "$MASTER_LOG"
+    --combo_index "$COMBO_INDEX"
+)
+
+if [ "$USE_RESUME" = "1" ]; then
+    CMD+=(--resume)
+fi
+
+{
+    echo "[CMD] ${CMD[*]}"
+    echo "[RUN] launching run_name=${RUN_NAME} combo_index=${COMBO_INDEX}"
+} | tee -a "$ARRAY_LOG"
+
+"${CMD[@]}" 2>&1 | tee -a "$ARRAY_LOG"
+RET=$?
+
+END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "[END] $END_TS return_code=$RET" | tee -a "$ARRAY_LOG"
+
+exit $RET
