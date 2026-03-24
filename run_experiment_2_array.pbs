@@ -1,9 +1,9 @@
 #!/bin/bash
 #PBS -N age_phase_diag
-#PBS -q gpuq-longrun
-#PBS -J 0-15
-#PBS -l select=1:ncpus=4:ngpus=1:mem=24gb
-#PBS -l walltime=24:00:00
+#PBS -q gpuq
+#PBS -J 0-35
+#PBS -l select=1:ncpus=4:ngpus=1:mem=12gb
+#PBS -l walltime=8:00:00
 #PBS -j oe
 #PBS -o pbs_logs/
 
@@ -14,16 +14,23 @@ set -euo pipefail
 # --------------------------------
 REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
 
-CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
+############################################################################################# CNN OR DNN
+
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
+
+#############################################################################################
+
+
 DRIVER_SCRIPT="${DRIVER_SCRIPT:-$REPO_DIR/src/experiment_2/experiment_age_phase_diagram.py}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
 
 RUN_NAME="${RUN_NAME:-experiment_2_utkface_age_4x4}"
-OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/results/experiment_2/$RUN_NAME}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/data/experiment_2/$RUN_NAME}"
 MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
 
 USE_RESUME="${USE_RESUME:-1}"
-CONDA_ENV_NAME="${CONDA_ENV_NAME:-theory-lm}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-rhm}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # --------------------------------

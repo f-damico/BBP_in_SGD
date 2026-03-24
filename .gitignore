@@ -1,54 +1,72 @@
-# -------------------------
-# Python / environment
-# -------------------------
+# -----------------------------
+# Python
+# -----------------------------
 __pycache__/
 *.py[cod]
 *.so
+
+# -----------------------------
+# Jupyter
+# -----------------------------
+.ipynb_checkpoints/
+
+# -----------------------------
+# Virtual environments
+# -----------------------------
 .venv/
 venv/
 env/
-.ipynb_checkpoints/
+myenv/
+conda-env/
+*.egg-info/
 
-# -------------------------
+# -----------------------------
 # Logs
-# -------------------------
+# -----------------------------
+logs/
+pbs_logs/
 *.log
+*.out
+*.err
 
-# -------------------------
-# Raw / per-run outputs
-# -------------------------
-# Ignore all generated experiment run folders
-results/phase_diagram/*
+# -----------------------------
+# Raw datasets and local data
+# Ignore all raw data
+# -----------------------------
+data/
+datasets/
+dataset/
+raw_data/
+downloads/
+tmp/
+cache/
+*.txt
+/results/
+/data/
+/pbs_logs/
+/oe/
+/__pycache__/
+*.pyc
+*.pyo
 
-#Ignore logs
-pbs_logs/*
+# -----------------------------
+# Experiment run outputs
+# Ignore per-run raw outputs
+# -----------------------------
+results/
+runs/
+outputs/
 
-# Keep aggregate / summary outputs
-!results/phase_diagram/aggregates/
-!results/phase_diagram/aggregates/**
+# -----------------------------
+# Keep only collected results
+# -----------------------------
+!collected_results/
+!collected_results/*.pkl
+!collected_results/*.csv
+!collected_results/*.json
 
-# Keep config files anywhere inside results
-!results/phase_diagram/**/*.json
-!results/phase_diagram/**/*.yaml
-!results/phase_diagram/**/*.yml
-
-# -------------------------
-# Data
-# -------------------------
-# Ignore raw datasets
-data/raw/
-data/intermediate/
-
-# Keep processed/aggregate datasets if you want
-!data/aggregates/
-!data/aggregates/**
-
-# -------------------------
-# Configs
-# -------------------------
-# Always keep config files tracked
-!src/configs/
-!src/configs/**
-!**/*.json
-!**/*.yaml
-!**/*.yml
+# -----------------------------
+# Optional: keep a placeholder
+# if you want empty folders tracked
+# -----------------------------
+!collected_results/.gitkeep

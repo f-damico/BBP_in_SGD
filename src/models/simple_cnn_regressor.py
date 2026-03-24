@@ -8,6 +8,26 @@ import json
 import torch
 import torch.nn as nn
 
+_ACTIVATIONS = {
+    "relu": nn.ReLU,
+    "tanh": nn.Tanh,
+    "linear": nn.Identity,
+    "identity": nn.Identity,
+    None: nn.Identity,
+}
+
+def _canonical_activation_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    return str(name).strip().lower()
+
+def build_activation(name: str | None) -> nn.Module:
+    key = _canonical_activation_name(name)
+    if key not in _ACTIVATIONS:
+        raise ValueError("Unsupported activation. Supported: relu, tanh, linear")
+    return _ACTIVATIONS[key]()
+
+
 
 def load_json_or_yaml(path: Union[str, Path]) -> Dict[str, Any]:
     path = Path(path)
@@ -70,7 +90,7 @@ class ConvBlock(nn.Module):
             raise ValueError("This simple CNN currently supports activation='relu' only.")
 
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=use_bias)
-        self.activation = nn.ReLU(inplace=False)
+        self.activation = build_activation(activation_name)
         self.pool = nn.MaxPool2d(kernel_size=2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -150,11 +170,12 @@ class SimpleCNNRegressor(nn.Module):
 
     def architecture_dict(self) -> Dict[str, Any]:
         return {
+            "model_name": "cnn",
             "input_channels": self.input_channels,
             "conv_channels": list(self.conv_channels),
             "mlp_hidden_dims": list(self.mlp_hidden_dims),
             "output_dim": self.output_dim,
-            "activation": self.activation,
+            "activation": self.activation_name,
             "bias": self.bias,
         }
 
@@ -165,20 +186,41 @@ class SimpleCNNRegressor(nn.Module):
                 init_module_normal_scaled(module, sigma2_w=sigma2_w)
 
 
-def build_model_from_config(
-    config_path: Union[str, Path],
+def build_simple_cnn_regressor_from_architecture(
+    arch: Dict[str, Any],
     *,
-    device: Union[str, torch.device] = "cpu",
+    device: str | torch.device = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> SimpleCNNRegressor:
-    cfg = load_json_or_yaml(config_path)
-    arch = cfg["architecture"]
     model = SimpleCNNRegressor(
-        input_channels=int(arch.get("input_channels", 3)),
+        input_channels=int(arch["input_channels"]),
         conv_channels=[int(c) for c in arch["conv_channels"]],
-        mlp_hidden_dims=[int(h) for h in arch.get("mlp_hidden_dims", [])],
+        mlp_hidden_dims=[int(h) for h in arch["mlp_hidden_dims"]],
         output_dim=int(arch.get("output_dim", 1)),
         activation=str(arch.get("activation", "relu")),
         bias=bool(arch.get("bias", True)),
     )
     return model.to(device=torch.device(device), dtype=dtype)
+
+
+def initialize_model_from_architecture(
+    model: SimpleCNNRegressor,
+    arch: Dict[str, Any],
+    *,
+    seed: int | None = None,
+) -> SimpleCNNRegressor:
+    sigma2_w = float(arch.get("sigma2_w", 1.0))
+    model.initialize_all_layers(sigma2_w=sigma2_w, seed=seed)
+    return model
+
+
+def build_initialized_simple_cnn_regressor(
+    arch: Dict[str, Any],
+    *,
+    seed: int | None = None,
+    device: str | torch.device = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> SimpleCNNRegressor:
+    model = build_simple_cnn_regressor_from_architecture(arch, device=device, dtype=dtype)
+    initialize_model_from_architecture(model, arch, seed=seed)
+    return model

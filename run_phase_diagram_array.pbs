@@ -25,7 +25,7 @@ MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
 
 MAX_RUNS="${MAX_RUNS:-}"
 USE_RESUME="${USE_RESUME:-1}"
-CONDA_ENV_NAME="${CONDA_ENV_NAME:-myenc}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-rhm}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # -------------------------------

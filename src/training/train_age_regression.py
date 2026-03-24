@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.models.simple_cnn_regressor import SimpleCNNRegressor
+from src.models import MODEL_BUILDERS
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class UTKFaceAgeDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         max_samples: int | None = None,
         shuffle_seed: int = 12345,
     ) -> None:
-        self.root = Path(root)
+        self.root = Path(root).resolve()
         if not self.root.exists():
             raise FileNotFoundError(
                 f"UTKFace dataset root not found: {self.root}. "
@@ -48,7 +49,13 @@ class UTKFaceAgeDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
         self.image_size = int(image_size)
 
         files = sorted(
-            [p for p in self.root.iterdir() if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}]
+            [
+                p
+                for p in self.root.rglob("*")
+                if p.is_file()
+                and not p.name.startswith(".")
+                and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+            ]
         )
 
         samples: List[UTKFaceSample] = []
@@ -59,7 +66,9 @@ class UTKFaceAgeDataset(Dataset[Tuple[torch.Tensor, torch.Tensor]]):
             samples.append(UTKFaceSample(image_path=path, age=float(age)))
 
         if len(samples) == 0:
-            raise RuntimeError(f"No UTKFace-like image files with parsable ages found in {self.root}.")
+            raise RuntimeError(
+                f"No UTKFace-like image files with parsable ages found in {self.root}."
+            )
 
         rng = random.Random(int(shuffle_seed))
         rng.shuffle(samples)
@@ -167,6 +176,9 @@ def compute_target_stats(dataset: Dataset[Tuple[torch.Tensor, torch.Tensor]]) ->
 def make_split_datasets(dataset_cfg: Dict[str, Any]) -> Tuple[Dataset, Dataset, float, float]:
     image_size = int(dataset_cfg.get("image_size", 64))
     root = Path(dataset_cfg["root"])
+    if not root.is_absolute():
+        root = (REPO_ROOT / root).resolve()
+
     max_samples = dataset_cfg.get("max_samples")
     split_seed = int(dataset_cfg.get("split_seed", 12345))
     train_fraction = float(dataset_cfg.get("train_fraction", 0.8))
@@ -275,31 +287,50 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     train_eval_loader = build_loader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, seed=seed)
     test_loader = build_loader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, seed=seed)
 
-    model = build_model(
-        architecture,
-        sigma2_w=float(train_cfg["sigma2_w"]),
-        seed=seed,
+    arch = dict(run_spec["architecture"])
+
+    if "sigma2_w" in train_cfg:
+        arch["sigma2_w"] = train_cfg["sigma2_w"]
+
+    model_name = str(arch["model_name"]).strip().lower()
+    model = MODEL_BUILDERS[model_name](
+        arch,
+        seed=int(run_spec["seed"]),
         device=device,
     )
 
     optimizer_name = str(train_cfg.get("optimizer", "sgd")).lower()
-    if optimizer_name != "sgd":
-        raise ValueError("This experiment keeps the optimizer fixed to plain SGD for a clean phase diagram.")
-
     lr = float(train_cfg["lr"])
     weight_decay = float(train_cfg.get("weight_decay", 0.0))
-    momentum = float(train_cfg.get("momentum", 0.0))
     epochs = int(train_cfg["epochs"])
     eval_epochs = sorted({int(e) for e in train_cfg.get("eval_epochs", [epochs])})
     if epochs not in eval_epochs:
         eval_epochs.append(epochs)
-
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay,
-    )
+    
+    if optimizer_name == "sgd":
+        momentum = float(train_cfg.get("momentum", 0.0))
+        optimizer = torch.optim.SGD(
+            model.parameters(),
+            lr=lr,
+            momentum=momentum,
+            weight_decay=weight_decay,
+        )
+    
+    elif optimizer_name == "adam":
+        beta1 = float(train_cfg.get("beta1", 0.9))
+        beta2 = float(train_cfg.get("beta2", 0.999))
+        eps = float(train_cfg.get("eps", 1.0e-8))
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=lr,
+            betas=(beta1, beta2),
+            eps=eps,
+            weight_decay=weight_decay,
+        )
+    
+    else:
+        raise ValueError(f"Unsupported optimizer '{optimizer_name}'. Supported: 'sgd', 'adam'.")
+    
     loss_fn = nn.MSELoss(reduction="mean")
 
     run_dir = output_npz.parent
@@ -387,6 +418,12 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         final_test_mae_years=np.float64(test_mae_list[-1]),
         final_train_mse_years=np.float64(train_mse_years_list[-1]),
         final_test_mse_years=np.float64(test_mse_years_list[-1]),
+        optimizer=np.array(optimizer_name),
+        weight_decay=np.float64(weight_decay),
+        momentum=np.float64(train_cfg.get("momentum", 0.0)),
+        beta1=np.float64(train_cfg.get("beta1", 0.9)),
+        beta2=np.float64(train_cfg.get("beta2", 0.999)),
+        eps=np.float64(train_cfg.get("eps", 1.0e-8)),
     )
 
 
