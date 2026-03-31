@@ -4,7 +4,7 @@
     "input_dim": 12288,
     "hidden_dims": [256,64,16],
     "output_dim": 1,
-    "activation": "relu",
+    "activation": "tanh",
     "bias": true
   },
   "dataset": {
