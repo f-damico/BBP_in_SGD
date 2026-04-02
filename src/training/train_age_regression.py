@@ -265,6 +265,59 @@ def evaluate(
     }
 
 
+def compute_full_train_gradient_norm(
+    model: nn.Module,
+    loader: DataLoader,
+    *,
+    device: torch.device,
+    loss_fn: nn.Module,
+) -> float:
+    """
+    Compute || grad_theta L_train ||_2 for the mean training loss over the whole
+    training set, using the same loss definition as training.
+
+    Important:
+    - this is done only at eval epochs,
+    - it does not change the optimizer state,
+    - gradients are cleared before and after the computation.
+    """
+    was_training = model.training
+    model.train()
+
+    model.zero_grad(set_to_none=True)
+
+    n_samples = len(loader.dataset)
+    if n_samples <= 0:
+        return float("nan")
+
+    for x, y_standardized in loader:
+        x = x.to(device, non_blocking=True)
+        y_standardized = y_standardized.to(device, non_blocking=True)
+
+        pred_standardized = model(x)
+        batch_loss = loss_fn(pred_standardized, y_standardized)
+
+        # loss_fn is mean over the batch, so weight it to reconstruct
+        # the mean loss over the full dataset.
+        weight = float(x.shape[0]) / float(n_samples)
+        (batch_loss * weight).backward()
+
+    grad_sq_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            g = p.grad.detach()
+            grad_sq_norm += float(torch.sum(g * g).item())
+
+    grad_norm = grad_sq_norm ** 0.5
+
+    model.zero_grad(set_to_none=True)
+
+    if not was_training:
+        model.eval()
+
+    return grad_norm
+
+
 def maybe_log_jsonl(path: Path, payload: Dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, sort_keys=True) + "\n")
@@ -303,6 +356,11 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     lr = float(train_cfg["lr"])
     weight_decay = float(train_cfg.get("weight_decay", 0.0))
     epochs = int(train_cfg["epochs"])
+    grad_clip_norm = train_cfg.get("grad_clip_norm", None)
+    if grad_clip_norm is not None:
+        grad_clip_norm = float(grad_clip_norm)
+        if grad_clip_norm <= 0.0:
+            raise ValueError("grad_clip_norm must be strictly positive when provided.")
     eval_epochs = sorted({int(e) for e in train_cfg.get("eval_epochs", [epochs])})
     if epochs not in eval_epochs:
         eval_epochs.append(epochs)
@@ -345,6 +403,7 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     test_mae_list: List[float] = []
     train_mse_years_list: List[float] = []
     test_mse_years_list: List[float] = []
+    train_grad_norm_list: List[float] = []
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -356,11 +415,22 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
             pred_standardized = model(x)
             loss = loss_fn(pred_standardized, y_standardized)
             loss.backward()
+
+            if grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+
             optimizer.step()
 
         if epoch in eval_epochs:
             train_metrics = evaluate(model, train_eval_loader, device=device, y_mean=y_mean, y_std=y_std)
             test_metrics = evaluate(model, test_loader, device=device, y_mean=y_mean, y_std=y_std)
+
+            train_grad_norm = compute_full_train_gradient_norm(
+                model,
+                train_eval_loader,
+                device=device,
+                loss_fn=loss_fn,
+            )
 
             epoch_list.append(epoch)
             train_loss_list.append(train_metrics["loss_std_mse"])
@@ -369,11 +439,13 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
             test_mae_list.append(test_metrics["mae_years"])
             train_mse_years_list.append(train_metrics["mse_years"])
             test_mse_years_list.append(test_metrics["mse_years"])
+            train_grad_norm_list.append(train_grad_norm)
 
             maybe_log_jsonl(
                 metrics_log_path,
                 {
                     "epoch": epoch,
+                    "train_grad_norm": train_grad_norm,
                     "train_loss_std_mse": train_metrics["loss_std_mse"],
                     "test_loss_std_mse": test_metrics["loss_std_mse"],
                     "train_mae_years": train_metrics["mae_years"],
@@ -388,7 +460,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                 f"train_loss_std_mse={train_metrics['loss_std_mse']:.6f} "
                 f"test_loss_std_mse={test_metrics['loss_std_mse']:.6f} "
                 f"train_mae_years={train_metrics['mae_years']:.4f} "
-                f"test_mae_years={test_metrics['mae_years']:.4f}",
+                f"test_mae_years={test_metrics['mae_years']:.4f} "
+                f"train_grad_norm={train_grad_norm:.6e}",
                 flush=True,
             )
 
@@ -397,6 +470,7 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         seed=np.int64(seed),
         sigma2_w=np.float64(train_cfg["sigma2_w"]),
         inv_sigma_w=np.float64(1.0 / max(float(train_cfg["sigma2_w"]) ** 0.5, 1.0e-12)),
+        grad_clip_norm=np.float64(-1.0 if grad_clip_norm is None else grad_clip_norm),
         lr=np.float64(lr),
         batch_size=np.int64(batch_size),
         epochs=np.int64(epochs),
@@ -424,6 +498,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         beta1=np.float64(train_cfg.get("beta1", 0.9)),
         beta2=np.float64(train_cfg.get("beta2", 0.999)),
         eps=np.float64(train_cfg.get("eps", 1.0e-8)),
+        train_grad_norm=np.asarray(train_grad_norm_list, dtype=np.float64),
+        final_train_grad_norm=np.float64(train_grad_norm_list[-1]),
     )
 
 

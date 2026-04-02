@@ -150,6 +150,7 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         "final_test_mae_years": [],
         "final_train_mse_years": [],
         "final_test_mse_years": [],
+        "final_train_grad_norm": [],
     }
 
     run_dir_arr = []
@@ -165,6 +166,7 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
     test_mae_arr = []
     train_mse_years_arr = []
     test_mse_years_arr = []
+    train_grad_norm_arr = []
 
     for run_id in run_ids:
         entry = results[run_id]
@@ -192,6 +194,7 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         scalar_fields["final_test_mae_years"].append(_to_float(npz.get("final_test_mae_years")))
         scalar_fields["final_train_mse_years"].append(_to_float(npz.get("final_train_mse_years")))
         scalar_fields["final_test_mse_years"].append(_to_float(npz.get("final_test_mse_years")))
+        scalar_fields["final_train_grad_norm"].append(_to_float(npz.get("final_train_grad_norm")))
 
         eval_epochs_arr.append(np.array(npz.get("eval_epochs", []), dtype=np.int64))
         train_loss_arr.append(np.array(npz.get("train_loss_std_mse", []), dtype=np.float64))
@@ -200,6 +203,7 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         test_mae_arr.append(np.array(npz.get("test_mae_years", []), dtype=np.float64))
         train_mse_years_arr.append(np.array(npz.get("train_mse_years", []), dtype=np.float64))
         test_mse_years_arr.append(np.array(npz.get("test_mse_years", []), dtype=np.float64))
+        train_grad_norm_arr.append(np.array(npz.get("train_grad_norm", []), dtype=np.float64))
 
     aggregated: Dict[str, np.ndarray] = {
         "run_id": np.array(run_ids, dtype=object),
@@ -215,6 +219,7 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         "test_mae_years": np.array(test_mae_arr, dtype=object),
         "train_mse_years": np.array(train_mse_years_arr, dtype=object),
         "test_mse_years": np.array(test_mse_years_arr, dtype=object),
+        "train_grad_norm": np.array(train_grad_norm_arr, dtype=object),
     }
 
     for key, values in scalar_fields.items():
