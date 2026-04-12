@@ -4,7 +4,7 @@
     "input_dim": 12288,
     "hidden_dims": [256, 64, 16],
     "output_dim": 1,
-    "activation": "relu",
+    "activation": "tanh",
     "bias": true
   },
   "dataset": {
@@ -23,9 +23,9 @@
     "inv_sigma_w": [0.00195, 0.00780, 0.03125, 0.125, 0.5, 2.0, 8.0, 32.0, 128.0, 512.0, 2048.0, 8096.0],
     "grad_clip_norm": [10.0],
     "batch_size": [128],
-    "epochs": [300],
+    "epochs": [10],
     "momentum": [0.0],
     "weight_decay": [0.0],
-    "eval_epochs": [[1, 2, 5, 10, 15, 20, 50, 70, 100, 130, 160, 200, 250, 300, 350, 400, 450, 500]]
+    "eval_epochs": [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
   }
 }

@@ -16,14 +16,22 @@ REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
 
 ############################################################################################# CNN OR DNN
 
-CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
-#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
 
 #############################################################################################
 
 
 DRIVER_SCRIPT="${DRIVER_SCRIPT:-$REPO_DIR/src/experiment_2/experiment_age_phase_diagram.py}"
-TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
+
+
+#############################################################################################  MINIBATCH OR FULL
+
+#TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression_full.py}"
+
+#############################################################################################
+
 
 RUN_NAME="${RUN_NAME:-experiment_2_utkface_age_4x4}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/data/experiment_2/$RUN_NAME}"
