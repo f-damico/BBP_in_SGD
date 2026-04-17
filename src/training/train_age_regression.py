@@ -265,13 +265,30 @@ def evaluate(
     }
 
 
-def compute_full_train_gradient_norm(
+def _flatten_matrix_for_svd(tensor: torch.Tensor) -> torch.Tensor:
+    if tensor.ndim == 2:
+        return tensor.detach()
+    if tensor.ndim == 4:
+        return tensor.detach().reshape(tensor.shape[0], -1)
+    raise ValueError(f"Unsupported tensor shape for SVD diagnostics: {tuple(tensor.shape)}")
+
+
+def _iter_svd_layers(model: nn.Module) -> List[Tuple[str, nn.Module]]:
+    layers: List[Tuple[str, nn.Module]] = []
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Linear, nn.Conv2d)):
+            layers.append((name, module))
+    return layers
+
+
+def compute_full_train_gradient_info(
     model: nn.Module,
     loader: DataLoader,
     *,
     device: torch.device,
     loss_fn: nn.Module,
-) -> float:
+    capture_matrices: bool = False,
+) -> Tuple[float, Dict[str, torch.Tensor] | None]:
     """
     Compute || grad_theta L_train ||_2 for the mean training loss over the whole
     training set, using the same loss definition as training.
@@ -288,7 +305,7 @@ def compute_full_train_gradient_norm(
 
     n_samples = len(loader.dataset)
     if n_samples <= 0:
-        return float("nan")
+        return float("nan"), None
 
     for x, y_standardized in loader:
         x = x.to(device, non_blocking=True)
@@ -310,17 +327,99 @@ def compute_full_train_gradient_norm(
 
     grad_norm = grad_sq_norm ** 0.5
 
+    grad_matrices: Dict[str, torch.Tensor] | None = None
+    if capture_matrices:
+        grad_matrices = {}
+        for layer_name, module in _iter_svd_layers(model):
+            if module.weight.grad is None:
+                continue
+            grad_matrices[layer_name] = _flatten_matrix_for_svd(module.weight.grad).detach().cpu().clone()
+
     model.zero_grad(set_to_none=True)
 
     if not was_training:
         model.eval()
 
-    return grad_norm
+    return grad_norm, grad_matrices
+
+
+def _tensor_to_serializable_list(x: torch.Tensor) -> List[float]:
+    return x.detach().cpu().numpy().astype(np.float64, copy=False).tolist()
+
+
+def _compute_layer_svd_diagnostics(
+    weight_matrix_cpu: torch.Tensor,
+    grad_matrix_cpu: torch.Tensor,
+    *,
+    topk_values: List[int],
+) -> Dict[str, Any]:
+    weight_matrix_cpu = weight_matrix_cpu.detach().cpu()
+    grad_matrix_cpu = grad_matrix_cpu.detach().cpu()
+
+    weight_svals = torch.linalg.svdvals(weight_matrix_cpu)
+    grad_u, grad_svals, _ = torch.linalg.svd(grad_matrix_cpu, full_matrices=False)
+
+    overlaps: Dict[str, Any] = {}
+    max_rank = int(grad_u.shape[1])
+    for requested_k in topk_values:
+        effective_k = min(int(requested_k), max_rank)
+        if effective_k <= 0:
+            q_value = float("nan")
+        else:
+            k_basis = grad_u[:, :effective_k]
+            projected = k_basis.transpose(0, 1).matmul(weight_matrix_cpu)
+            q_value = float(torch.sum(projected * projected).item())
+        overlaps[str(int(requested_k))] = {
+            "effective_k": int(effective_k),
+            "q": q_value,
+        }
+
+    return {
+        "weight_shape": list(weight_matrix_cpu.shape),
+        "grad_shape": list(grad_matrix_cpu.shape),
+        "weight_singular_values": _tensor_to_serializable_list(weight_svals),
+        "grad_singular_values": _tensor_to_serializable_list(grad_svals),
+        "grad_topk_overlaps": overlaps,
+    }
+
+
+@torch.no_grad()
+def collect_svd_diagnostics(
+    model: nn.Module,
+    grad_matrices: Dict[str, torch.Tensor],
+    *,
+    topk_values: List[int],
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "layer_order": [],
+        "layers": {},
+    }
+
+    for layer_name, module in _iter_svd_layers(model):
+        if layer_name not in grad_matrices:
+            continue
+        weight_matrix_cpu = _flatten_matrix_for_svd(module.weight).detach().cpu().clone()
+        grad_matrix_cpu = grad_matrices[layer_name]
+        payload["layer_order"].append(layer_name)
+        payload["layers"][layer_name] = {
+            "module_type": type(module).__name__,
+            **_compute_layer_svd_diagnostics(
+                weight_matrix_cpu,
+                grad_matrix_cpu,
+                topk_values=topk_values,
+            ),
+        }
+    return payload
 
 
 def maybe_log_jsonl(path: Path, payload: Dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def save_svd_diagnostics_file(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(payload, path)
 
 
 def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
@@ -364,7 +463,16 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     eval_epochs = sorted({int(e) for e in train_cfg.get("eval_epochs", [epochs])})
     if epochs not in eval_epochs:
         eval_epochs.append(epochs)
-    
+
+    save_svd_diagnostics = bool(train_cfg.get("save_svd_diagnostics", False))
+    svd_diag_filename = str(train_cfg.get("svd_diag_filename", "svd_diagnostics.pt"))
+    svd_topk_values = [int(k) for k in train_cfg.get("svd_topk", [1, 3, 5, 10])]
+    if len(svd_topk_values) == 0:
+        raise ValueError("svd_topk must contain at least one positive integer when provided.")
+    if any(k <= 0 for k in svd_topk_values):
+        raise ValueError("All svd_topk values must be strictly positive integers.")
+    svd_topk_values = sorted(dict.fromkeys(svd_topk_values))
+
     if optimizer_name == "sgd":
         momentum = float(train_cfg.get("momentum", 0.0))
         optimizer = torch.optim.SGD(
@@ -373,7 +481,7 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
             momentum=momentum,
             weight_decay=weight_decay,
         )
-    
+
     elif optimizer_name == "adam":
         beta1 = float(train_cfg.get("beta1", 0.9))
         beta2 = float(train_cfg.get("beta2", 0.999))
@@ -385,16 +493,20 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
             eps=eps,
             weight_decay=weight_decay,
         )
-    
+
     else:
         raise ValueError(f"Unsupported optimizer '{optimizer_name}'. Supported: 'sgd', 'adam'.")
-    
+
     loss_fn = nn.MSELoss(reduction="mean")
 
     run_dir = output_npz.parent
     metrics_log_path = run_dir / "metrics_log.jsonl"
     if metrics_log_path.exists():
         metrics_log_path.unlink()
+
+    svd_diag_path = run_dir / svd_diag_filename
+    if save_svd_diagnostics and svd_diag_path.exists():
+        svd_diag_path.unlink()
 
     epoch_list: List[int] = []
     train_loss_list: List[float] = []
@@ -404,6 +516,15 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     train_mse_years_list: List[float] = []
     test_mse_years_list: List[float] = []
     train_grad_norm_list: List[float] = []
+
+    svd_payload: Dict[str, Any] | None = None
+    if save_svd_diagnostics:
+        svd_payload = {
+            "run_spec_path": str(run_spec.get("run_spec_path", "")),
+            "svd_topk": list(svd_topk_values),
+            "epochs": [],
+            "by_epoch": {},
+        }
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -425,12 +546,25 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
             train_metrics = evaluate(model, train_eval_loader, device=device, y_mean=y_mean, y_std=y_std)
             test_metrics = evaluate(model, test_loader, device=device, y_mean=y_mean, y_std=y_std)
 
-            train_grad_norm = compute_full_train_gradient_norm(
+            train_grad_norm, grad_matrices = compute_full_train_gradient_info(
                 model,
                 train_eval_loader,
                 device=device,
                 loss_fn=loss_fn,
+                capture_matrices=save_svd_diagnostics,
             )
+
+            if save_svd_diagnostics:
+                if svd_payload is None or grad_matrices is None:
+                    raise RuntimeError("SVD diagnostics were requested but could not be computed.")
+                epoch_key = str(int(epoch))
+                svd_payload["epochs"].append(int(epoch))
+                svd_payload["by_epoch"][epoch_key] = collect_svd_diagnostics(
+                    model,
+                    grad_matrices,
+                    topk_values=svd_topk_values,
+                )
+                save_svd_diagnostics_file(svd_diag_path, svd_payload)
 
             epoch_list.append(epoch)
             train_loss_list.append(train_metrics["loss_std_mse"])
@@ -452,6 +586,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                     "test_mae_years": test_metrics["mae_years"],
                     "train_mse_years": train_metrics["mse_years"],
                     "test_mse_years": test_metrics["mse_years"],
+                    "svd_diagnostics_saved": bool(save_svd_diagnostics),
+                    "svd_diag_filename": svd_diag_filename if save_svd_diagnostics else None,
                 },
             )
 
@@ -461,7 +597,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                 f"test_loss_std_mse={test_metrics['loss_std_mse']:.6f} "
                 f"train_mae_years={train_metrics['mae_years']:.4f} "
                 f"test_mae_years={test_metrics['mae_years']:.4f} "
-                f"train_grad_norm={train_grad_norm:.6e}",
+                f"train_grad_norm={train_grad_norm:.6e} "
+                f"svd_diagnostics={'on' if save_svd_diagnostics else 'off'}",
                 flush=True,
             )
 
@@ -500,6 +637,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         eps=np.float64(train_cfg.get("eps", 1.0e-8)),
         train_grad_norm=np.asarray(train_grad_norm_list, dtype=np.float64),
         final_train_grad_norm=np.float64(train_grad_norm_list[-1]),
+        save_svd_diagnostics=np.bool_(save_svd_diagnostics),
+        svd_diag_filename=np.array(svd_diag_filename),
     )
 
 
@@ -514,6 +653,7 @@ def main() -> None:
     output_npz.parent.mkdir(parents=True, exist_ok=True)
 
     run_spec = load_json(run_spec_path)
+    run_spec["run_spec_path"] = str(run_spec_path)
     train_one_run(run_spec, output_npz)
 
 

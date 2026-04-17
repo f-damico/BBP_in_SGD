@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N age_phase_diag
 #PBS -q gpuq
-#PBS -J 0-143
+#PBS -J 0-24
 #PBS -l select=1:ncpus=4:ngpus=1:mem=12gb
 #PBS -l walltime=8:00:00
 #PBS -j oe
@@ -27,8 +27,8 @@ DRIVER_SCRIPT="${DRIVER_SCRIPT:-$REPO_DIR/src/experiment_2/experiment_age_phase_
 
 #############################################################################################  MINIBATCH OR FULL
 
-#TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
-TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression_full.py}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
+#TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression_full.py}"
 
 #############################################################################################
 
@@ -40,6 +40,15 @@ MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
 USE_RESUME="${USE_RESUME:-1}"
 CONDA_ENV_NAME="${CONDA_ENV_NAME:-rhm}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
+
+# --------------------------------
+# Optional SVD diagnostics
+# Default OFF
+# Set COMPUTE_SVD_DIAGNOSTICS=1 when submitting if you want them
+# --------------------------------
+COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-0}"
+SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
+SVD_TOPK="${SVD_TOPK:-1 3 5 10}"
 
 # --------------------------------
 # Basic job info
@@ -159,6 +168,12 @@ CMD=(
 
 if [ "$USE_RESUME" = "1" ]; then
     CMD+=(--resume)
+fi
+
+if [ "$COMPUTE_SVD_DIAGNOSTICS" = "1" ]; then
+    CMD+=(--save_svd_diagnostics)
+    CMD+=(--svd_diag_filename "$SVD_DIAG_FILENAME")
+    CMD+=(--svd_topk ${SVD_TOPK})
 fi
 
 {
