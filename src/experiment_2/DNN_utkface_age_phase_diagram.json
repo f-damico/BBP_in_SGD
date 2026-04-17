@@ -23,7 +23,7 @@
     "inv_sigma_w": [0.00195, 0.125, 8.0,512.0, 8096.0],
     "grad_clip_norm": [10.0],
     "batch_size": [128],
-    "epochs": [10],
+    "epochs": [300],
     "momentum": [0.0],
     "weight_decay": [0.0],
     "eval_epochs": [[1, 2, 5, 10, 15, 20, 50, 70, 100, 130, 160, 200, 250, 300]]
