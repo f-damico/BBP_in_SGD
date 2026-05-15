@@ -29,6 +29,13 @@ CONDA_ENV_NAME="${CONDA_ENV_NAME:-rhm}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # -------------------------------
+# Optional SVD diagnostics
+# Default OFF. Set COMPUTE_SVD_DIAGNOSTICS=1 when submitting.
+# -------------------------------
+COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-0}"
+SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
+
+# -------------------------------
 # Basic job info
 # -------------------------------
 SEED_INDEX="${PBS_ARRAY_INDEX:-0}"
@@ -137,6 +144,11 @@ fi
 
 if [ -n "$MAX_RUNS" ]; then
     CMD+=(--max_runs "$MAX_RUNS")
+fi
+
+if [ "$COMPUTE_SVD_DIAGNOSTICS" = "1" ]; then
+    CMD+=(--save_svd_diagnostics)
+    CMD+=(--svd_diag_filename "$SVD_DIAG_FILENAME")
 fi
 
 {

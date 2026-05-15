@@ -27,6 +27,21 @@ if str(REPO_ROOT) not in sys.path:
 from models.teacher_student_mlp import TeacherStudentMLP, init_linear_normal_scaled  # type: ignore
 from phase_diagram.make_teacher_and_data import make_teacher_and_data  # type: ignore
 
+try:
+    from svd_diagnostics import (
+        append_weight_svd_diagnostics,
+        infer_input_shape_from_configs,
+        make_initial_svd_payload,
+        make_svd_config,
+    )
+except ImportError:  # when executed from the repository root
+    from training.svd_diagnostics import (
+        append_weight_svd_diagnostics,
+        infer_input_shape_from_configs,
+        make_initial_svd_payload,
+        make_svd_config,
+    )
+
 
 def set_global_seed(seed: int) -> None:
     random.seed(seed)
@@ -212,6 +227,14 @@ def main() -> None:
         train_cfg=train_cfg,
     )
 
+    save_svd_diagnostics = bool(train_cfg.get("save_svd_diagnostics", False))
+    svd_cfg = make_svd_config(train_cfg)
+    svd_diag_filename = str(svd_cfg["diag_filename"])
+    svd_input_shape = infer_input_shape_from_configs(architecture, run_spec.get("dataset", {}))
+    svd_diag_path = run_dir / svd_diag_filename
+    if save_svd_diagnostics and svd_diag_path.exists():
+        svd_diag_path.unlink()
+
     seed_teacher_data = seed
     seed_student = seed 
     seed_batches = seed 
@@ -228,6 +251,9 @@ def main() -> None:
         write_log_line(logf, f"[INFO] trainable_layer_indices={list(trainable_layer_indices)}")
         write_log_line(logf, f"[INFO] eval_steps={eval_steps}")
         write_log_line(logf, f"[INFO] teacher_data_config={teacher_data_config}")
+        write_log_line(logf, f"[INFO] save_svd_diagnostics={save_svd_diagnostics}")
+        if save_svd_diagnostics:
+            write_log_line(logf, f"[INFO] svd_diag_path={svd_diag_path}")
 
         td = make_teacher_and_data(
             teacher_data_config,
@@ -272,15 +298,36 @@ def main() -> None:
         train_losses: List[float] = []
         test_losses: List[float] = []
 
+        svd_payload: Dict[str, Any] | None = None
+        if save_svd_diagnostics:
+            svd_payload = make_initial_svd_payload(
+                run_spec_path=str(run_spec_path),
+                time_key="step",
+                input_shape=svd_input_shape,
+                svd_config=svd_cfg,
+            )
+
         def evaluate_and_log(step: int) -> None:
             train_loss = compute_mse(student, X_train_cpu, y_train_cpu, device=device)
             test_loss = compute_mse(student, X_test_cpu, y_test_cpu, device=device)
             steps_recorded.append(int(step))
             train_losses.append(float(train_loss))
             test_losses.append(float(test_loss))
+            if save_svd_diagnostics:
+                if svd_payload is None:
+                    raise RuntimeError("SVD diagnostics were requested but could not be initialised.")
+                append_weight_svd_diagnostics(
+                    path=svd_diag_path,
+                    payload=svd_payload,
+                    model=student,
+                    time_value=step,
+                    input_shape=svd_input_shape,
+                    svd_config=svd_cfg,
+                )
             write_log_line(
                 logf,
-                f"[EVAL] step={step:8d} train_loss={train_loss:.10e} test_loss={test_loss:.10e}",
+                f"[EVAL] step={step:8d} train_loss={train_loss:.10e} "
+                f"test_loss={test_loss:.10e} svd_diagnostics={'on' if save_svd_diagnostics else 'off'}",
             )
 
         eval_steps_set = set(eval_steps)
@@ -321,6 +368,9 @@ def main() -> None:
             "architecture": architecture,
             "dataset": run_spec.get("dataset", None),
             "inv_sigma_w": inv_sigma_w,
+            "save_svd_diagnostics": save_svd_diagnostics,
+            "svd_diag_filename": svd_diag_filename if save_svd_diagnostics else None,
+            "svd_diag_path": str(svd_diag_path) if save_svd_diagnostics else None,
         }
 
         np.savez_compressed(
@@ -330,6 +380,9 @@ def main() -> None:
             test_loss=np.asarray(test_losses, dtype=np.float64),
             final_train_loss=np.asarray(final_train_loss, dtype=np.float64),
             final_test_loss=np.asarray(final_test_loss, dtype=np.float64),
+            save_svd_diagnostics=np.bool_(save_svd_diagnostics),
+            svd_diag_filename=np.array(svd_diag_filename),
+            svd_diag_path=np.array(str(svd_diag_path) if save_svd_diagnostics else ""),
             metadata_json=np.asarray(json.dumps(metadata, sort_keys=True)),
         )
 

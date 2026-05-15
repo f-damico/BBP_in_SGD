@@ -23,6 +23,21 @@ if str(REPO_ROOT) not in sys.path:
 from src.models.simple_cnn_regressor import SimpleCNNRegressor
 from src.models import MODEL_BUILDERS
 
+try:
+    from svd_diagnostics import (
+        append_weight_svd_diagnostics,
+        infer_input_shape_from_configs,
+        make_initial_svd_payload,
+        make_svd_config,
+    )
+except ImportError:  # when executed as src/training/train_age_regression_full.py
+    from src.training.svd_diagnostics import (
+        append_weight_svd_diagnostics,
+        infer_input_shape_from_configs,
+        make_initial_svd_payload,
+        make_svd_config,
+    )
+
 
 @dataclass(frozen=True)
 class UTKFaceSample:
@@ -438,6 +453,11 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     if epochs not in eval_epochs:
         eval_epochs.append(epochs)
 
+    save_svd_diagnostics = bool(train_cfg.get("save_svd_diagnostics", False))
+    svd_cfg = make_svd_config(train_cfg)
+    svd_diag_filename = str(svd_cfg["diag_filename"])
+    svd_input_shape = infer_input_shape_from_configs(arch, dataset_cfg)
+
     if optimizer_name == "sgd":
         momentum = float(train_cfg.get("momentum", 0.0))
         optimizer = torch.optim.SGD(
@@ -469,6 +489,10 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     if metrics_log_path.exists():
         metrics_log_path.unlink()
 
+    svd_diag_path = run_dir / svd_diag_filename
+    if save_svd_diagnostics and svd_diag_path.exists():
+        svd_diag_path.unlink()
+
     epoch_list: List[int] = []
     train_loss_list: List[float] = []
     test_loss_list: List[float] = []
@@ -478,6 +502,15 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     test_mse_years_list: List[float] = []
     train_grad_norm_list: List[float] = []
     epoch_train_loss_before_step_list: List[float] = []
+
+    svd_payload: Dict[str, Any] | None = None
+    if save_svd_diagnostics:
+        svd_payload = make_initial_svd_payload(
+            run_spec_path=str(run_spec.get("run_spec_path", "")),
+            time_key="epoch",
+            input_shape=svd_input_shape,
+            svd_config=svd_cfg,
+        )
 
     for epoch in range(1, epochs + 1):
         train_loss_before_step = train_one_epoch_full_batch_accumulation(
@@ -512,6 +545,18 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                 loss_fn=loss_fn,
             )
 
+            if save_svd_diagnostics:
+                if svd_payload is None:
+                    raise RuntimeError("SVD diagnostics were requested but could not be initialised.")
+                append_weight_svd_diagnostics(
+                    path=svd_diag_path,
+                    payload=svd_payload,
+                    model=model,
+                    time_value=epoch,
+                    input_shape=svd_input_shape,
+                    svd_config=svd_cfg,
+                )
+
             epoch_list.append(epoch)
             epoch_train_loss_before_step_list.append(train_loss_before_step)
             train_loss_list.append(train_metrics["loss_std_mse"])
@@ -534,6 +579,9 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                     "test_mae_years": test_metrics["mae_years"],
                     "train_mse_years": train_metrics["mse_years"],
                     "test_mse_years": test_metrics["mse_years"],
+                    "svd_diagnostics_saved": bool(save_svd_diagnostics),
+                    "svd_diag_filename": svd_diag_filename if save_svd_diagnostics else None,
+                    "svd_diag_path": str(svd_diag_path) if save_svd_diagnostics else None,
                 },
             )
 
@@ -544,7 +592,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                 f"test_loss_std_mse={test_metrics['loss_std_mse']:.6f} "
                 f"train_mae_years={train_metrics['mae_years']:.4f} "
                 f"test_mae_years={test_metrics['mae_years']:.4f} "
-                f"train_grad_norm={train_grad_norm:.6e}",
+                f"train_grad_norm={train_grad_norm:.6e} "
+                f"svd_diagnostics={'on' if save_svd_diagnostics else 'off'}",
                 flush=True,
             )
 
@@ -586,6 +635,9 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         eps=np.float64(train_cfg.get("eps", 1.0e-8)),
         train_grad_norm=np.asarray(train_grad_norm_list, dtype=np.float64),
         final_train_grad_norm=np.float64(train_grad_norm_list[-1]),
+        save_svd_diagnostics=np.bool_(save_svd_diagnostics),
+        svd_diag_filename=np.array(svd_diag_filename),
+        svd_diag_path=np.array(str(svd_diag_path) if save_svd_diagnostics else ""),
     )
 
 
@@ -600,6 +652,7 @@ def main() -> None:
     output_npz.parent.mkdir(parents=True, exist_ok=True)
 
     run_spec = load_json(run_spec_path)
+    run_spec["run_spec_path"] = str(run_spec_path)
     train_one_run(run_spec, output_npz)
 
 

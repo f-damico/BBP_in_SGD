@@ -62,6 +62,30 @@ def _make_run_id(base_dir: Path, run_dir: Path, npz_dict: Dict[str, Any], run_sp
     return rel
 
 
+def _find_svd_diagnostics_path(run_dir: Path, npz_dict: Dict[str, Any], run_spec: Optional[Dict[str, Any]]) -> Optional[Path]:
+    candidates: List[Path] = []
+
+    npz_path = npz_dict.get("svd_diag_path")
+    if isinstance(npz_path, str) and npz_path:
+        candidates.append(Path(npz_path))
+
+    filename = npz_dict.get("svd_diag_filename")
+    if isinstance(filename, str) and filename:
+        candidates.append(run_dir / filename)
+
+    if isinstance(run_spec, dict) and isinstance(run_spec.get("train"), dict):
+        train = run_spec["train"]
+        filename = train.get("svd_diag_filename", "svd_diagnostics.pt")
+        candidates.append(run_dir / str(filename))
+
+    candidates.append(run_dir / "svd_diagnostics.pt")
+
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    return None
+
+
 def collect_results(results_dir: Path, verbose: bool = False) -> Dict[str, Dict[str, Any]]:
     results: Dict[str, Dict[str, Any]] = {}
 
@@ -102,6 +126,7 @@ def collect_results(results_dir: Path, verbose: bool = False) -> Dict[str, Dict[
             seed = npz_dict.get("seed")
 
         run_id = _make_run_id(results_dir, run_dir, npz_dict, run_spec)
+        svd_path = _find_svd_diagnostics_path(run_dir, npz_dict, run_spec)
         results[run_id] = {
             "run_dir": str(run_dir),
             "run_spec": run_spec,
@@ -111,6 +136,8 @@ def collect_results(results_dir: Path, verbose: bool = False) -> Dict[str, Dict[
             "seed": seed,
             "npz": npz_dict,
             "metrics_log": metrics_log,
+            "svd_diagnostics_path": None if svd_path is None else str(svd_path),
+            "svd_diagnostics_exists": svd_path is not None,
         }
 
     return results
@@ -158,6 +185,8 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
     architecture_json_arr = []
     dataset_json_arr = []
     train_json_arr = []
+    svd_diagnostics_path_arr = []
+    svd_diagnostics_exists_arr = []
 
     eval_epochs_arr = []
     train_loss_arr = []
@@ -177,6 +206,8 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         architecture_json_arr.append(json.dumps(entry.get("architecture"), sort_keys=True))
         dataset_json_arr.append(json.dumps(entry.get("dataset"), sort_keys=True))
         train_json_arr.append(json.dumps(entry.get("train"), sort_keys=True))
+        svd_diagnostics_path_arr.append(entry.get("svd_diagnostics_path"))
+        svd_diagnostics_exists_arr.append(bool(entry.get("svd_diagnostics_exists", False)))
 
         scalar_fields["seed"].append(_to_int(entry.get("seed", npz.get("seed"))))
         scalar_fields["lr"].append(_to_float(npz.get("lr")))
@@ -212,6 +243,8 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         "architecture_json": np.array(architecture_json_arr, dtype=object),
         "dataset_json": np.array(dataset_json_arr, dtype=object),
         "train_json": np.array(train_json_arr, dtype=object),
+        "svd_diagnostics_path": np.array(svd_diagnostics_path_arr, dtype=object),
+        "svd_diagnostics_exists": np.array(svd_diagnostics_exists_arr, dtype=bool),
         "eval_epochs": np.array(eval_epochs_arr, dtype=object),
         "train_loss_std_mse": np.array(train_loss_arr, dtype=object),
         "test_loss_std_mse": np.array(test_loss_arr, dtype=object),

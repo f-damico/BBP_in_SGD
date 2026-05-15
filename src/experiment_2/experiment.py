@@ -155,6 +155,17 @@ def main() -> None:
         help="Optional cap on number of runs executed for this seed.",
     )
     p.add_argument("--dry_run", action="store_true", help="Print planned runs but do not execute.")
+    p.add_argument(
+        "--save_svd_diagnostics",
+        action="store_true",
+        help="If set, enable layer SVD/eigenvalue diagnostics at eval steps for each run.",
+    )
+    p.add_argument(
+        "--svd_diag_filename",
+        type=str,
+        default="svd_diagnostics.pt",
+        help="Filename used inside each run directory for the saved SVD diagnostics payload.",
+    )
     args = p.parse_args()
 
     cfg_path = Path(args.config).resolve()
@@ -180,6 +191,11 @@ def main() -> None:
     grid_combos = _cartesian_product(grid)
     if args.max_runs is not None:
         grid_combos = grid_combos[: args.max_runs]
+
+    if args.save_svd_diagnostics:
+        for hp in grid_combos:
+            hp["save_svd_diagnostics"] = True
+            hp["svd_diag_filename"] = str(args.svd_diag_filename)
 
     seed_dir = out_base / f"seed_{selected_seed:04d}"
     seed_dir.mkdir(parents=True, exist_ok=True)

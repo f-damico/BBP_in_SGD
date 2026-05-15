@@ -139,13 +139,6 @@ def main() -> None:
         default="svd_diagnostics.pt",
         help="Filename used inside each run directory for the saved SVD diagnostics payload.",
     )
-    p.add_argument(
-        "--svd_topk",
-        nargs="*",
-        type=int,
-        default=None,
-        help="Optional override for the list of top-k values used in gradient-subspace overlaps. Example: --svd_topk 1 3 5 10",
-    )
     args = p.parse_args()
 
     cfg_path = Path(args.config).resolve()
@@ -173,10 +166,8 @@ def main() -> None:
     if args.save_svd_diagnostics:
         selected_combo["save_svd_diagnostics"] = True
         selected_combo["svd_diag_filename"] = str(args.svd_diag_filename)
-        selected_combo["svd_topk"] = [int(k) for k in (args.svd_topk if args.svd_topk is not None else [1, 3, 5, 10])]
     elif "save_svd_diagnostics" in selected_combo and bool(selected_combo["save_svd_diagnostics"]):
         selected_combo["svd_diag_filename"] = str(selected_combo.get("svd_diag_filename", args.svd_diag_filename))
-        selected_combo["svd_topk"] = [int(k) for k in selected_combo.get("svd_topk", [1, 3, 5, 10])]
 
     if "inv_sigma_w" in selected_combo:
         if "sigma2_w" in selected_combo:

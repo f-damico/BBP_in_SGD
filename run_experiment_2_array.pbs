@@ -46,9 +46,10 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 # Default OFF
 # Set COMPUTE_SVD_DIAGNOSTICS=1 when submitting if you want them
 # --------------------------------
-COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-0}"
+COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-1}"
 SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
-SVD_TOPK="${SVD_TOPK:-1 3 5 10}"
+# Optional safety controls for true Conv2d-as-dense-linear-map SVD.
+# Empty means no size limit; for CNNs this can require many GB/TB.
 
 # --------------------------------
 # Basic job info
@@ -173,7 +174,6 @@ fi
 if [ "$COMPUTE_SVD_DIAGNOSTICS" = "1" ]; then
     CMD+=(--save_svd_diagnostics)
     CMD+=(--svd_diag_filename "$SVD_DIAG_FILENAME")
-    CMD+=(--svd_topk ${SVD_TOPK})
 fi
 
 {
