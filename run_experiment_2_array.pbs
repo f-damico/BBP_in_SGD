@@ -17,8 +17,8 @@ REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
 ############################################################################################# CNN OR DNN
 
 #CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
-#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
-CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram_BIG.json}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram_BIG.json}"
 
 #############################################################################################
 

@@ -4,7 +4,7 @@
     "input_dim": 12288,
     "hidden_dims": [256, 64, 16],
     "output_dim": 1,
-    "activation": "relu",
+    "activation": "tanh",
     "bias": true
   },
   "dataset": {
@@ -20,8 +20,8 @@
   "grid": {
     "optimizer": ["sgd"],
 
-    "lr": [0.000125, 0.0005, 0.002, 0.008, 0.0032],
-    "inv_sigma_w": [0.0625, 0.25, 1.0, 4.0, 16.0],
+    "lr": [0.000125, 0.0005, 0.0016, 0.0032, 0.0128],
+    "inv_sigma_w": [0.25, 1.0, 4.0, 16.0, 64],
     "grad_clip_norm": [10.0],
     "batch_size": [128],
     "epochs": [300],
