@@ -17,22 +17,22 @@ REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
 ############################################################################################# CNN OR DNN
 
 #CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/utkface_age_phase_diagram.json}"
-CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram.json}"
 #CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram_BIG.json}"
+
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram_q.json}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_utkface_age_phase_diagram_BIG_q.json}"
 
 #############################################################################################
 
-
 DRIVER_SCRIPT="${DRIVER_SCRIPT:-$REPO_DIR/src/experiment_2/experiment_age_phase_diagram.py}"
 
-
-#############################################################################################  MINIBATCH OR FULL
+############################################################################################# MINIBATCH OR FULL
 
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
 #TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression_full.py}"
 
 #############################################################################################
-
 
 RUN_NAME="${RUN_NAME:-experiment_2_utkface_age_4x4}"
 OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/data/experiment_2/$RUN_NAME}"
@@ -44,18 +44,21 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # --------------------------------
 # Optional SVD diagnostics
-# Default OFF
-# Set COMPUTE_SVD_DIAGNOSTICS=1 when submitting if you want them
 # --------------------------------
 COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-1}"
 SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
-# Optional safety controls for true Conv2d-as-dense-linear-map SVD.
-# Empty means no size limit; for CNNs this can require many GB/TB.
+
+# --------------------------------
+# Optional weight checkpoints at validation epochs
+# --------------------------------
+SAVE_WEIGHT_CHECKPOINTS="${SAVE_WEIGHT_CHECKPOINTS:-0}"
+WEIGHT_CHECKPOINT_FILENAME="${WEIGHT_CHECKPOINT_FILENAME:-weight_checkpoints.pt}"
+WEIGHT_CHECKPOINT_DTYPE="${WEIGHT_CHECKPOINT_DTYPE:-float32}"
 
 # --------------------------------
 # Basic job info
 # --------------------------------
-COMBO_INDEX="${PBS_ARRAY_INDEX:-0}"
+ARRAY_INDEX="${PBS_ARRAY_INDEX:-0}"
 JOB_ID="${PBS_JOBID:-no_jobid}"
 HOSTNAME_NOW="$(hostname)"
 START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -67,13 +70,9 @@ cd "$REPO_DIR"
 
 # --------------------------------
 # Modules / environment
-# Adapt if needed for your cluster
 # --------------------------------
 if command -v module >/dev/null 2>&1; then
     module purge || true
-    # Example:
-    # module load cuda/12.1
-    # module load anaconda3
 fi
 
 if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
@@ -83,7 +82,7 @@ else
     source activate "$CONDA_ENV_NAME"
 fi
 
-ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_combo_${COMBO_INDEX}.log"
+ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_index_${ARRAY_INDEX}.log"
 
 {
     echo "[START] $START_TS"
@@ -95,9 +94,14 @@ ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_combo_${COMBO_INDE
     echo "[INFO] run_name=$RUN_NAME"
     echo "[INFO] output_dir=$OUTPUT_DIR"
     echo "[INFO] master_log=$MASTER_LOG"
-    echo "[INFO] combo_index=$COMBO_INDEX"
+    echo "[INFO] array_index=$ARRAY_INDEX"
     echo "[INFO] conda_env_name=$CONDA_ENV_NAME"
     echo "[INFO] python_bin=$PYTHON_BIN"
+    echo "[INFO] compute_svd_diagnostics=$COMPUTE_SVD_DIAGNOSTICS"
+    echo "[INFO] svd_diag_filename=$SVD_DIAG_FILENAME"
+    echo "[INFO] save_weight_checkpoints=$SAVE_WEIGHT_CHECKPOINTS"
+    echo "[INFO] weight_checkpoint_filename=$WEIGHT_CHECKPOINT_FILENAME"
+    echo "[INFO] weight_checkpoint_dtype=$WEIGHT_CHECKPOINT_DTYPE"
     echo "[INFO] pwd=$(pwd)"
     echo "[INFO] which_python=$(command -v "$PYTHON_BIN" || true)"
     echo "[INFO] python_version=$($PYTHON_BIN --version 2>&1 || true)"
@@ -124,40 +128,96 @@ if [ ! -f "$TRAIN_SCRIPT" ]; then
 fi
 
 # --------------------------------
-# Check number of hyperparameter combinations
+# Count jobs. Supports both:
+# 1) old Cartesian grid only
+# 2) grid + coupled_grid
 # --------------------------------
-N_COMBOS="$($PYTHON_BIN - <<'PY' "$CONFIG_PATH"
+COUNTS="$($PYTHON_BIN - "$CONFIG_PATH" <<'PY'
 import json
 import sys
 
-with open(sys.argv[1], "r") as f:
+config_path = sys.argv[1]
+with open(config_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 
 grid = cfg.get("grid", {})
+seeds = cfg.get("seeds", [])
+coupled_grid = cfg.get("coupled_grid", None)
+
 if not grid:
-    print(0)
+    print("0 0 0")
     raise SystemExit(0)
 
-count = 1
-for key, vals in grid.items():
-    vals = vals if isinstance(vals, list) else [vals]
-    count *= len(vals)
+base_count = 1
+for vals in grid.values():
+    if not isinstance(vals, list):
+        vals = [vals]
+    base_count *= len(vals)
 
-print(count)
+if coupled_grid is None:
+    n_combos = base_count
+else:
+    if not isinstance(coupled_grid, list) or len(coupled_grid) == 0:
+        raise ValueError("coupled_grid must be a non-empty list")
+
+    grid_keys = set(grid.keys())
+    coupled_keys = set()
+    for i, point in enumerate(coupled_grid):
+        if not isinstance(point, dict):
+            raise ValueError("coupled_grid[%d] must be a dictionary" % i)
+        if len(point) == 0:
+            raise ValueError("coupled_grid[%d] cannot be empty" % i)
+        coupled_keys.update(point.keys())
+
+    overlap = grid_keys.intersection(coupled_keys)
+    if overlap:
+        raise ValueError(
+            "These parameters appear both in grid and coupled_grid: " + str(sorted(overlap))
+        )
+
+    n_combos = base_count * len(coupled_grid)
+
+n_seeds = len(seeds)
+n_total = n_combos * n_seeds
+print(n_combos, n_seeds, n_total)
 PY
 )"
 
-echo "[INFO] n_hyperparameter_combinations=$N_COMBOS" | tee -a "$ARRAY_LOG"
+read -r N_COMBOS N_SEEDS N_TOTAL <<< "$COUNTS"
 
-if [ "$COMBO_INDEX" -ge "$N_COMBOS" ]; then
-    echo "[ERROR] PBS_ARRAY_INDEX=$COMBO_INDEX but config contains only $N_COMBOS combinations." | tee -a "$ARRAY_LOG"
-    echo "[ERROR] Fix '#PBS -J ...' so it matches the grid size." | tee -a "$ARRAY_LOG"
+{
+    echo "[INFO] n_hyperparameter_combinations=$N_COMBOS"
+    echo "[INFO] n_seeds=$N_SEEDS"
+    echo "[INFO] n_total_array_jobs=$N_TOTAL"
+} | tee -a "$ARRAY_LOG"
+
+if [ "$N_COMBOS" -le 0 ]; then
+    echo "[ERROR] Config contains no hyperparameter combinations." | tee -a "$ARRAY_LOG"
     exit 1
 fi
 
+if [ "$N_SEEDS" -le 0 ]; then
+    echo "[ERROR] Config contains no seeds." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ "$ARRAY_INDEX" -ge "$N_TOTAL" ]; then
+    echo "[ERROR] PBS_ARRAY_INDEX=$ARRAY_INDEX but total required jobs are $N_TOTAL." | tee -a "$ARRAY_LOG"
+    echo "[ERROR] Fix the PBS array range so it goes from 0 to N_TOTAL minus 1." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+COMBO_INDEX=$((ARRAY_INDEX / N_SEEDS))
+SEED_INDEX=$((ARRAY_INDEX % N_SEEDS))
+
+{
+    echo "[INFO] resolved_combo_index=$COMBO_INDEX"
+    echo "[INFO] resolved_seed_index=$SEED_INDEX"
+} | tee -a "$ARRAY_LOG"
+
 # --------------------------------
-# Launch one hyperparameter point on this GPU
-# Seeds are replicated sequentially inside the driver
+# Launch one independent run on this GPU:
+# one hyperparameter combo + one seed
 # --------------------------------
 CMD=(
     "$PYTHON_BIN" -u "$DRIVER_SCRIPT"
@@ -165,7 +225,7 @@ CMD=(
     --output_dir "$OUTPUT_DIR"
     --train_script "$TRAIN_SCRIPT"
     --master_log "$MASTER_LOG"
-    --combo_index "$COMBO_INDEX"
+    --array_index "$ARRAY_INDEX"
 )
 
 if [ "$USE_RESUME" = "1" ]; then
@@ -177,9 +237,15 @@ if [ "$COMPUTE_SVD_DIAGNOSTICS" = "1" ]; then
     CMD+=(--svd_diag_filename "$SVD_DIAG_FILENAME")
 fi
 
+if [ "$SAVE_WEIGHT_CHECKPOINTS" = "1" ]; then
+    CMD+=(--save_weight_checkpoints)
+    CMD+=(--weight_checkpoint_filename "$WEIGHT_CHECKPOINT_FILENAME")
+    CMD+=(--weight_checkpoint_dtype "$WEIGHT_CHECKPOINT_DTYPE")
+fi
+
 {
     echo "[CMD] ${CMD[*]}"
-    echo "[RUN] launching run_name=${RUN_NAME} combo_index=${COMBO_INDEX}"
+    echo "[RUN] launching run_name=$RUN_NAME array_index=$ARRAY_INDEX combo_index=$COMBO_INDEX seed_index=$SEED_INDEX"
 } | tee -a "$ARRAY_LOG"
 
 "${CMD[@]}" 2>&1 | tee -a "$ARRAY_LOG"
@@ -188,4 +254,4 @@ RET=$?
 END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "[END] $END_TS return_code=$RET" | tee -a "$ARRAY_LOG"
 
-exit $RET
+exit "$RET"

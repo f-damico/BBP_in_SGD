@@ -66,6 +66,76 @@ def _cartesian_product(grid: Dict[str, Any]) -> List[Dict[str, Any]]:
     return combos
 
 
+def _build_hyperparameter_combos(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Two valid config styles.
+
+    Style 1: full Cartesian grid, as before
+        "grid": {
+            "lr": [...],
+            "inv_sigma_w": [...],
+            "batch_size": [128],
+            ...
+        }
+
+    Style 2: explicit coupled points
+        "grid": {
+            "batch_size": [128],
+            "epochs": [300],
+            ...
+        },
+        "coupled_grid": [
+            {"lr": lr1, "inv_sigma_w": inv1},
+            {"lr": lr2, "inv_sigma_w": inv2}
+        ]
+
+    In style 2, the final combos are:
+        CartesianProduct(grid) x coupled_grid
+    """
+
+    grid = cfg.get("grid", {})
+    if not grid:
+        raise ValueError("Config must contain non-empty 'grid' dict with hyperparameter lists/scalars.")
+
+    base_combos = _cartesian_product(grid)
+
+    coupled_grid = cfg.get("coupled_grid", None)
+
+    # Old behavior: no coupled_grid -> full Cartesian grid
+    if coupled_grid is None:
+        return base_combos
+
+    # New behavior: exact coupled points
+    if not isinstance(coupled_grid, list) or len(coupled_grid) == 0:
+        raise ValueError("'coupled_grid' must be a non-empty list of dictionaries.")
+
+    for i, point in enumerate(coupled_grid):
+        if not isinstance(point, dict):
+            raise ValueError(f"coupled_grid[{i}] must be a dictionary.")
+        if len(point) == 0:
+            raise ValueError(f"coupled_grid[{i}] cannot be empty.")
+
+    coupled_keys = set()
+    for point in coupled_grid:
+        coupled_keys.update(point.keys())
+
+    overlap = coupled_keys.intersection(set(grid.keys()))
+    if overlap:
+        raise ValueError(
+            "A parameter cannot appear both in 'grid' and in 'coupled_grid'. "
+            f"Move these keys only to one place: {sorted(overlap)}"
+        )
+
+    combos: List[Dict[str, Any]] = []
+    for base in base_combos:
+        for point in coupled_grid:
+            merged = dict(base)
+            merged.update(dict(point))
+            combos.append(merged)
+
+    return combos
+
+
 def _stable_hash(obj: Any) -> str:
     s = json.dumps(obj, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(s.encode("utf-8")).hexdigest()[:12]
@@ -93,6 +163,28 @@ def _select_combo(combos: List[Dict[str, Any]], combo_index: int | None) -> tupl
             f"combo_index={combo_index} out of range for {len(combos)} hyperparameter combinations."
         )
     return combo_index, combos[combo_index]
+
+
+def _select_combo_and_seed(
+    combos: List[Dict[str, Any]],
+    seeds: List[int],
+    array_index: int,
+) -> tuple[int, Dict[str, Any], int, int]:
+    n_combos = len(combos)
+    n_seeds = len(seeds)
+    n_total = n_combos * n_seeds
+
+    if array_index < 0 or array_index >= n_total:
+        raise IndexError(
+            f"array_index={array_index} out of range for "
+            f"n_combos={n_combos}, n_seeds={n_seeds}, total={n_total}."
+        )
+
+    combo_index = array_index // n_seeds
+    seed_index = array_index % n_seeds
+    seed = int(seeds[seed_index])
+
+    return combo_index, combos[combo_index], seed_index, seed
 
 
 def main() -> None:
@@ -123,6 +215,15 @@ def main() -> None:
         help="Index inside the cartesian product of config['grid']; intended for PBS_ARRAY_INDEX.",
     )
     p.add_argument(
+        "--array_index",
+        type=int,
+        default=None,
+        help=(
+            "Flattened PBS array index over (hyperparameter combo, seed). "
+            "Use this when PBS -J has length n_combos * n_seeds."
+        ),
+    )
+    p.add_argument(
         "--resume",
         action="store_true",
         help="If set, skip runs whose output.npz already exists.",
@@ -138,6 +239,23 @@ def main() -> None:
         type=str,
         default="svd_diagnostics.pt",
         help="Filename used inside each run directory for the saved SVD diagnostics payload.",
+    )
+    p.add_argument(
+        "--save_weight_checkpoints",
+        action="store_true",
+        help="If set, save model weights at every validation epoch for each run.",
+    )
+    p.add_argument(
+        "--weight_checkpoint_filename",
+        type=str,
+        default="weight_checkpoints.pt",
+        help="Filename inside each run directory for validation-time model weights.",
+    )
+    p.add_argument(
+        "--weight_checkpoint_dtype",
+        type=str,
+        default="float32",
+        help="Dtype for saved floating tensors: original, float32, float16, bfloat16.",
     )
     args = p.parse_args()
 
@@ -155,12 +273,23 @@ def main() -> None:
     if not seeds:
         raise ValueError("Config must contain non-empty 'seeds' list.")
 
-    grid = cfg.get("grid", {})
-    if not grid:
-        raise ValueError("Config must contain non-empty 'grid' dict with hyperparameter lists/scalars.")
+    combos = _build_hyperparameter_combos(cfg)
 
-    combos = _cartesian_product(grid)
-    selected_combo_index, selected_combo = _select_combo(combos, args.combo_index)
+    if args.array_index is not None:
+        if args.combo_index is not None:
+            raise ValueError("Pass only one of --array_index or --combo_index, not both.")
+
+        selected_combo_index, selected_combo, selected_seed_index, selected_seed = _select_combo_and_seed(
+            combos=combos,
+            seeds=seeds,
+            array_index=int(args.array_index),
+        )
+        selected_seeds = [selected_seed]
+    else:
+        selected_combo_index, selected_combo = _select_combo(combos, args.combo_index)
+        selected_seed_index = None
+        selected_seeds = list(seeds)
+
     selected_combo = dict(selected_combo)
 
     if args.save_svd_diagnostics:
@@ -168,6 +297,18 @@ def main() -> None:
         selected_combo["svd_diag_filename"] = str(args.svd_diag_filename)
     elif "save_svd_diagnostics" in selected_combo and bool(selected_combo["save_svd_diagnostics"]):
         selected_combo["svd_diag_filename"] = str(selected_combo.get("svd_diag_filename", args.svd_diag_filename))
+
+    if args.save_weight_checkpoints:
+        selected_combo["save_weight_checkpoints"] = True
+        selected_combo["weight_checkpoint_filename"] = str(args.weight_checkpoint_filename)
+        selected_combo["weight_checkpoint_dtype"] = str(args.weight_checkpoint_dtype)
+    elif "save_weight_checkpoints" in selected_combo and bool(selected_combo["save_weight_checkpoints"]):
+        selected_combo["weight_checkpoint_filename"] = str(
+            selected_combo.get("weight_checkpoint_filename", args.weight_checkpoint_filename)
+        )
+        selected_combo["weight_checkpoint_dtype"] = str(
+            selected_combo.get("weight_checkpoint_dtype", args.weight_checkpoint_dtype)
+        )
 
     if "inv_sigma_w" in selected_combo:
         if "sigma2_w" in selected_combo:
@@ -199,7 +340,7 @@ def main() -> None:
                 mlog,
                 f"# DRY RUN: would execute {len(seeds)} seeds for combo_index={selected_combo_index} combo={selected_combo}.",
             )
-            for seed in seeds:
+            for seed in selected_seeds:
                 spec = {
                     "seed": seed,
                     "architecture": architecture,
@@ -216,10 +357,10 @@ def main() -> None:
 
         _write_launch_line(
             mlog,
-            f"# Will execute {len(seeds)} seeds for combo_index={selected_combo_index} combo={selected_combo}.",
+            f"# Will execute {len(selected_seeds)} seed(s) for combo_index={selected_combo_index} combo={selected_combo}."
         )
 
-        for seed in seeds:
+        for seed in selected_seeds:
             spec = {
                 "seed": seed,
                 "architecture": architecture,
