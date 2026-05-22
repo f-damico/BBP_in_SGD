@@ -336,6 +336,91 @@ def maybe_log_jsonl(path: Path, payload: Dict[str, Any]) -> None:
         f.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
+
+
+def _checkpoint_dtype_from_name(name: str) -> torch.dtype | None:
+    name = str(name).strip().lower()
+    if name in {"none", "original", "keep"}:
+        return None
+    if name in {"float32", "fp32", "torch.float32"}:
+        return torch.float32
+    if name in {"float16", "fp16", "torch.float16"}:
+        return torch.float16
+    if name in {"bfloat16", "bf16", "torch.bfloat16"}:
+        return torch.bfloat16
+    raise ValueError(
+        "weight_checkpoint_dtype must be one of: original, float32, float16, bfloat16."
+    )
+
+
+def _model_state_dict_cpu(
+    model: nn.Module,
+    *,
+    dtype_name: str = "float32",
+) -> Dict[str, torch.Tensor]:
+    target_dtype = _checkpoint_dtype_from_name(dtype_name)
+    out: Dict[str, torch.Tensor] = {}
+
+    for name, tensor in model.state_dict().items():
+        t = tensor.detach().cpu()
+        if target_dtype is not None and torch.is_floating_point(t):
+            t = t.to(dtype=target_dtype)
+        out[name] = t.clone()
+
+    return out
+
+
+def _atomic_torch_save(obj: Any, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp_path)
+    tmp_path.replace(path)
+
+
+def make_initial_weight_checkpoint_payload(
+    *,
+    run_spec: Dict[str, Any],
+    run_spec_path: str,
+    time_key: str = "epoch",
+    dtype_name: str = "float32",
+) -> Dict[str, Any]:
+    return {
+        "format_version": 1,
+        "description": (
+            "Model weights saved at validation times. "
+            "Contains model.state_dict() tensors moved to CPU. "
+            "Optimizer state is intentionally not saved."
+        ),
+        "run_spec_path": str(run_spec_path),
+        "architecture": run_spec.get("architecture", None),
+        "dataset": run_spec.get("dataset", None),
+        "train": run_spec.get("train", None),
+        "seed": run_spec.get("seed", None),
+        "time_key": str(time_key),
+        "weight_checkpoint_dtype": str(dtype_name),
+        "times": [],
+        "by_time": {},
+    }
+
+
+def append_weight_checkpoint(
+    *,
+    path: Path,
+    payload: Dict[str, Any],
+    model: nn.Module,
+    time_value: int,
+    dtype_name: str,
+) -> None:
+    time_value = int(time_value)
+    key = str(time_value)
+
+    payload.setdefault("times", []).append(time_value)
+    payload.setdefault("by_time", {})[key] = {
+        "model_state_dict": _model_state_dict_cpu(model, dtype_name=dtype_name),
+    }
+
+    _atomic_torch_save(payload, path)
+
 def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     seed = int(run_spec["seed"])
     architecture = dict(run_spec["architecture"])
@@ -383,6 +468,14 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     svd_diag_filename = str(svd_cfg["diag_filename"])
     svd_input_shape = infer_input_shape_from_configs(arch, dataset_cfg)
 
+    save_weight_checkpoints = bool(train_cfg.get("save_weight_checkpoints", False))
+    weight_checkpoint_filename = str(
+        train_cfg.get("weight_checkpoint_filename", "weight_checkpoints.pt")
+    )
+    weight_checkpoint_dtype = str(
+        train_cfg.get("weight_checkpoint_dtype", "float32")
+    )
+
     if optimizer_name == "sgd":
         momentum = float(train_cfg.get("momentum", 0.0))
         optimizer = torch.optim.SGD(
@@ -418,6 +511,10 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
     if save_svd_diagnostics and svd_diag_path.exists():
         svd_diag_path.unlink()
 
+    weight_checkpoint_path = run_dir / weight_checkpoint_filename
+    if save_weight_checkpoints and weight_checkpoint_path.exists():
+        weight_checkpoint_path.unlink()
+
     epoch_list: List[int] = []
     train_loss_list: List[float] = []
     test_loss_list: List[float] = []
@@ -434,6 +531,15 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
             time_key="epoch",
             input_shape=svd_input_shape,
             svd_config=svd_cfg,
+        )
+
+    weight_checkpoint_payload: Dict[str, Any] | None = None
+    if save_weight_checkpoints:
+        weight_checkpoint_payload = make_initial_weight_checkpoint_payload(
+            run_spec=run_spec,
+            run_spec_path=str(run_spec.get("run_spec_path", "")),
+            time_key="epoch",
+            dtype_name=weight_checkpoint_dtype,
         )
 
     for epoch in range(1, epochs + 1):
@@ -476,6 +582,17 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                     svd_config=svd_cfg,
                 )
 
+            if save_weight_checkpoints:
+                if weight_checkpoint_payload is None:
+                    raise RuntimeError("Weight checkpoints were requested but could not be initialised.")
+                append_weight_checkpoint(
+                    path=weight_checkpoint_path,
+                    payload=weight_checkpoint_payload,
+                    model=model,
+                    time_value=epoch,
+                    dtype_name=weight_checkpoint_dtype,
+                )
+
             epoch_list.append(epoch)
             train_loss_list.append(train_metrics["loss_std_mse"])
             test_loss_list.append(test_metrics["loss_std_mse"])
@@ -499,6 +616,10 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                     "svd_diagnostics_saved": bool(save_svd_diagnostics),
                     "svd_diag_filename": svd_diag_filename if save_svd_diagnostics else None,
                     "svd_diag_path": str(svd_diag_path) if save_svd_diagnostics else None,
+                    "weight_checkpoints_saved": bool(save_weight_checkpoints),
+                    "weight_checkpoint_filename": weight_checkpoint_filename if save_weight_checkpoints else None,
+                    "weight_checkpoint_path": str(weight_checkpoint_path) if save_weight_checkpoints else None,
+                    "weight_checkpoint_dtype": weight_checkpoint_dtype if save_weight_checkpoints else None,
                 },
             )
 
@@ -509,7 +630,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                 f"train_mae_years={train_metrics['mae_years']:.4f} "
                 f"test_mae_years={test_metrics['mae_years']:.4f} "
                 f"train_grad_norm={train_grad_norm:.6e} "
-                f"svd_diagnostics={'on' if save_svd_diagnostics else 'off'}",
+                f"svd_diagnostics={'on' if save_svd_diagnostics else 'off'} "
+                f"weight_checkpoints={'on' if save_weight_checkpoints else 'off'}",
                 flush=True,
             )
 
@@ -551,6 +673,10 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         save_svd_diagnostics=np.bool_(save_svd_diagnostics),
         svd_diag_filename=np.array(svd_diag_filename),
         svd_diag_path=np.array(str(svd_diag_path) if save_svd_diagnostics else ""),
+        save_weight_checkpoints=np.bool_(save_weight_checkpoints),
+        weight_checkpoint_filename=np.array(weight_checkpoint_filename),
+        weight_checkpoint_path=np.array(str(weight_checkpoint_path) if save_weight_checkpoints else ""),
+        weight_checkpoint_dtype=np.array(weight_checkpoint_dtype),
     )
 
 

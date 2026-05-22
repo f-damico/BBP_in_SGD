@@ -662,16 +662,16 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                     svd_config=svd_cfg,
                 )
 
-                if save_weight_checkpoints:
-                    if weight_checkpoint_payload is None:
-                        raise RuntimeError("Weight checkpoints were requested but could not be initialised.")
-                    append_weight_checkpoint(
-                        path=weight_checkpoint_path,
-                        payload=weight_checkpoint_payload,
-                        model=model,
-                        time_value=epoch,
-                        dtype_name=weight_checkpoint_dtype,
-                    )
+            if save_weight_checkpoints:
+                if weight_checkpoint_payload is None:
+                    raise RuntimeError("Weight checkpoints were requested but could not be initialised.")
+                append_weight_checkpoint(
+                    path=weight_checkpoint_path,
+                    payload=weight_checkpoint_payload,
+                    model=model,
+                    time_value=epoch,
+                    dtype_name=weight_checkpoint_dtype,
+                )
 
             epoch_list.append(epoch)
             epoch_train_loss_before_step_list.append(train_loss_before_step)
@@ -713,7 +713,8 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
                 f"train_mae_years={train_metrics['mae_years']:.4f} "
                 f"test_mae_years={test_metrics['mae_years']:.4f} "
                 f"train_grad_norm={train_grad_norm:.6e} "
-                f"svd_diagnostics={'on' if save_svd_diagnostics else 'off'}",
+                f"svd_diagnostics={'on' if save_svd_diagnostics else 'off'} "
+                f"weight_checkpoints={'on' if save_weight_checkpoints else 'off'}",
                 flush=True,
             )
 

@@ -16,7 +16,7 @@
     "max_samples": 20000,
     "num_workers": 4
   },
-  "seeds": [1,2,3,4,5],
+  "seeds": [1,2,3,4],
   "grid": {
     "optimizer": ["sgd"],
     "grad_clip_norm": [10.0],

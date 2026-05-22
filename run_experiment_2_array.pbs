@@ -1,8 +1,8 @@
 #!/bin/bash
 #PBS -N age_phase_diag
 #PBS -q gpuq
-#PBS -J 0-24
-#PBS -l select=1:ncpus=4:ngpus=1:mem=12gb
+#PBS -J 0-19
+#PBS -l select=1:ncpus=4:ngpus=1:mem=8gb
 #PBS -l walltime=8:00:00
 #PBS -j oe
 #PBS -o pbs_logs/
@@ -45,7 +45,7 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 # --------------------------------
 # Optional SVD diagnostics
 # --------------------------------
-COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-1}"
+COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-0}"
 SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
 
 # --------------------------------
