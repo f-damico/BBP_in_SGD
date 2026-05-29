@@ -169,10 +169,16 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         "epochs": [],
         "n_train": [],
         "n_test": [],
+        "target_mean": [],
+        "target_std": [],
         "target_mean_years": [],
         "target_std_years": [],
         "final_train_loss_std_mse": [],
         "final_test_loss_std_mse": [],
+        "final_train_mae": [],
+        "final_test_mae": [],
+        "final_train_mse": [],
+        "final_test_mse": [],
         "final_train_mae_years": [],
         "final_test_mae_years": [],
         "final_train_mse_years": [],
@@ -181,7 +187,10 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
     }
 
     run_dir_arr = []
+    dataset_name_arr = []
     dataset_root_arr = []
+    target_name_arr = []
+    target_units_arr = []
     architecture_json_arr = []
     dataset_json_arr = []
     train_json_arr = []
@@ -202,7 +211,10 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         npz = entry.get("npz", {})
 
         run_dir_arr.append(entry.get("run_dir"))
+        dataset_name_arr.append(npz.get("dataset_name"))
         dataset_root_arr.append(npz.get("dataset_root"))
+        target_name_arr.append(npz.get("target_name"))
+        target_units_arr.append(npz.get("target_units"))
         architecture_json_arr.append(json.dumps(entry.get("architecture"), sort_keys=True))
         dataset_json_arr.append(json.dumps(entry.get("dataset"), sort_keys=True))
         train_json_arr.append(json.dumps(entry.get("train"), sort_keys=True))
@@ -217,29 +229,38 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
         scalar_fields["epochs"].append(_to_int(npz.get("epochs")))
         scalar_fields["n_train"].append(_to_int(npz.get("n_train")))
         scalar_fields["n_test"].append(_to_int(npz.get("n_test")))
-        scalar_fields["target_mean_years"].append(_to_float(npz.get("target_mean_years")))
-        scalar_fields["target_std_years"].append(_to_float(npz.get("target_std_years")))
+        scalar_fields["target_mean"].append(_to_float(npz.get("target_mean", npz.get("target_mean_years"))))
+        scalar_fields["target_std"].append(_to_float(npz.get("target_std", npz.get("target_std_years"))))
+        scalar_fields["target_mean_years"].append(_to_float(npz.get("target_mean_years", npz.get("target_mean"))))
+        scalar_fields["target_std_years"].append(_to_float(npz.get("target_std_years", npz.get("target_std"))))
         scalar_fields["final_train_loss_std_mse"].append(_to_float(npz.get("final_train_loss_std_mse")))
         scalar_fields["final_test_loss_std_mse"].append(_to_float(npz.get("final_test_loss_std_mse")))
-        scalar_fields["final_train_mae_years"].append(_to_float(npz.get("final_train_mae_years")))
-        scalar_fields["final_test_mae_years"].append(_to_float(npz.get("final_test_mae_years")))
-        scalar_fields["final_train_mse_years"].append(_to_float(npz.get("final_train_mse_years")))
-        scalar_fields["final_test_mse_years"].append(_to_float(npz.get("final_test_mse_years")))
+        scalar_fields["final_train_mae"].append(_to_float(npz.get("final_train_mae", npz.get("final_train_mae_years"))))
+        scalar_fields["final_test_mae"].append(_to_float(npz.get("final_test_mae", npz.get("final_test_mae_years"))))
+        scalar_fields["final_train_mse"].append(_to_float(npz.get("final_train_mse", npz.get("final_train_mse_years"))))
+        scalar_fields["final_test_mse"].append(_to_float(npz.get("final_test_mse", npz.get("final_test_mse_years"))))
+        scalar_fields["final_train_mae_years"].append(_to_float(npz.get("final_train_mae_years", npz.get("final_train_mae"))))
+        scalar_fields["final_test_mae_years"].append(_to_float(npz.get("final_test_mae_years", npz.get("final_test_mae"))))
+        scalar_fields["final_train_mse_years"].append(_to_float(npz.get("final_train_mse_years", npz.get("final_train_mse"))))
+        scalar_fields["final_test_mse_years"].append(_to_float(npz.get("final_test_mse_years", npz.get("final_test_mse"))))
         scalar_fields["final_train_grad_norm"].append(_to_float(npz.get("final_train_grad_norm")))
 
         eval_epochs_arr.append(np.array(npz.get("eval_epochs", []), dtype=np.int64))
         train_loss_arr.append(np.array(npz.get("train_loss_std_mse", []), dtype=np.float64))
         test_loss_arr.append(np.array(npz.get("test_loss_std_mse", []), dtype=np.float64))
-        train_mae_arr.append(np.array(npz.get("train_mae_years", []), dtype=np.float64))
-        test_mae_arr.append(np.array(npz.get("test_mae_years", []), dtype=np.float64))
-        train_mse_years_arr.append(np.array(npz.get("train_mse_years", []), dtype=np.float64))
-        test_mse_years_arr.append(np.array(npz.get("test_mse_years", []), dtype=np.float64))
+        train_mae_arr.append(np.array(npz.get("train_mae", npz.get("train_mae_years", [])), dtype=np.float64))
+        test_mae_arr.append(np.array(npz.get("test_mae", npz.get("test_mae_years", [])), dtype=np.float64))
+        train_mse_years_arr.append(np.array(npz.get("train_mse", npz.get("train_mse_years", [])), dtype=np.float64))
+        test_mse_years_arr.append(np.array(npz.get("test_mse", npz.get("test_mse_years", [])), dtype=np.float64))
         train_grad_norm_arr.append(np.array(npz.get("train_grad_norm", []), dtype=np.float64))
 
     aggregated: Dict[str, np.ndarray] = {
         "run_id": np.array(run_ids, dtype=object),
         "run_dir": np.array(run_dir_arr, dtype=object),
+        "dataset_name": np.array(dataset_name_arr, dtype=object),
         "dataset_root": np.array(dataset_root_arr, dtype=object),
+        "target_name": np.array(target_name_arr, dtype=object),
+        "target_units": np.array(target_units_arr, dtype=object),
         "architecture_json": np.array(architecture_json_arr, dtype=object),
         "dataset_json": np.array(dataset_json_arr, dtype=object),
         "train_json": np.array(train_json_arr, dtype=object),
@@ -265,9 +286,10 @@ def build_aggregated_np_arrays(results: Dict[str, Dict[str, Any]]) -> Dict[str, 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Collect experiment results.")
+    parser = argparse.ArgumentParser(description="Collect experiment-2 outputs. By default saves results/<run_name>.npy, where run_name is results_dir.name.")
     parser.add_argument("--results_dir", type=str, required=True, help="Root folder containing experiment outputs.")
-    parser.add_argument("--save_name", type=str, default=None, help="Base name under collected_results/")
+    parser.add_argument("--save_name", type=str, default=None, help="Base filename without suffix. If omitted, uses results_dir.name.")
+    parser.add_argument("--results_root", type=str, default="results", help="Folder used by the default .npy output path.")
     parser.add_argument("--output_pickle", type=str, default=None, help="Exact pickle output path.")
     parser.add_argument("--output_npz", type=str, default=None, help="Exact npz output path.")
     parser.add_argument("--output_npy", type=str, default=None, help="Exact npy output path for a dict.")
@@ -297,12 +319,18 @@ def main() -> None:
     if args.output_npy is not None:
         output_npy = Path(args.output_npy).expanduser().resolve()
 
+    # Default behaviour requested for the old experiment workflow:
+    #   python src/experiment_2/collect_results.py --results_dir data/experiment_2/<RUN_NAME>
+    # creates:
+    #   results/<RUN_NAME>.npy
+    # No need to repeat RUN_NAME twice on the command line.
+    if args.save_name is None and output_pickle is None and output_npz is None and output_npy is None:
+        output_npy = (Path(args.results_root).expanduser().resolve() / results_dir.name).with_suffix(".npy")
+
     if args.save_name is not None:
-        base = Path("collected_results").resolve() / args.save_name
-        if output_pickle is None:
-            output_pickle = base.with_suffix(".pkl")
-        if output_npz is None:
-            output_npz = base.with_suffix(".npz")
+        base = (Path(args.results_root).expanduser().resolve() / args.save_name)
+        if output_npy is None and output_pickle is None and output_npz is None:
+            output_npy = base.with_suffix(".npy")
 
     if output_pickle is not None:
         output_pickle.parent.mkdir(parents=True, exist_ok=True)

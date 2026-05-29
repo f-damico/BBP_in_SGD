@@ -1,0 +1,36 @@
+{
+  "architecture": {
+    "model_name": "dnn",
+    "input_dim": 12288,
+    "hidden_dims": [256, 64, 16],
+    "output_dim": 1,
+    "activation": "relu",
+    "bias": true
+  },
+  "dataset": {
+    "name": "shapes3d",
+    "processed_path": "dataset/shapes3d/processed/shapes3d_50k_orientation.npz",
+    "target": "orientation",
+    "flatten": true,
+    "normalize_images": true,
+    "standardize_targets": false,
+    "train_fraction": 0.8,
+    "split_seed": 12345,
+    "max_samples": 20000,
+    "standardize_x": true,
+    "standardize_y": true,
+    "num_workers": 4
+  },
+  "seeds": [1],
+  "grid": {
+    "optimizer": ["sgd"],
+    "lr": [0.00000195, 0.00000780, 0.00003125, 0.000125, 0.0005, 0.002, 0.008, 0.032, 0.0128, 0.0512, 0.2048, 0.8096],
+    "inv_sigma_w": [0.00195, 0.00780, 0.03125, 0.125, 0.5, 2.0, 8.0, 32.0, 128.0, 512.0, 2048.0, 8096.0],
+    "grad_clip_norm": [10.0],
+    "batch_size": [128],
+    "epochs": [300],
+    "momentum": [0.0],
+    "weight_decay": [0.0],
+    "eval_epochs": [[1, 2, 5, 10, 15, 20, 50, 70, 100, 130, 160, 200, 250, 300]]
+  }
+}

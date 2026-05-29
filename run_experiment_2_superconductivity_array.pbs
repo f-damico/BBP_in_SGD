@@ -1,0 +1,257 @@
+#!/bin/bash
+#PBS -N supercond_phase_diag
+#PBS -q gpuq
+#PBS -J 0-24
+#PBS -l select=1:ncpus=2:ngpus=1:mem=8gb
+#PBS -l walltime=8:00:00
+#PBS -j oe
+#PBS -o pbs_logs/
+
+set -euo pipefail
+
+# --------------------------------
+# User-editable settings
+# --------------------------------
+REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
+
+############################################################################################# DNN SUPERCONDUCTIVITY
+
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_superconductivity_phase_diagram_q.json}"
+
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_superconductivity_phase_diagram.json}"
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_superconductivity_phase_diagram_BIG.json}"
+#CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_superconductivity_phase_diagram_q.json}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/experiment_2/DNN_superconductivity_phase_diagram_BIG_q.json}"
+
+#############################################################################################
+
+DRIVER_SCRIPT="${DRIVER_SCRIPT:-$REPO_DIR/src/experiment_2/experiment_age_phase_diagram.py}"
+
+############################################################################################# MINIBATCH OR FULL
+
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression.py}"
+#TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_age_regression_full.py}"
+
+#############################################################################################
+
+RUN_NAME="${RUN_NAME:-experiment_2_superconductivity_dnn_q}"
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/data/experiment_2/$RUN_NAME}"
+MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
+
+USE_RESUME="${USE_RESUME:-1}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-rhm}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+# --------------------------------
+# Optional SVD diagnostics
+# --------------------------------
+COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-0}"
+SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
+
+# --------------------------------
+# Optional weight checkpoints at validation epochs
+# --------------------------------
+SAVE_WEIGHT_CHECKPOINTS="${SAVE_WEIGHT_CHECKPOINTS:-0}"
+WEIGHT_CHECKPOINT_FILENAME="${WEIGHT_CHECKPOINT_FILENAME:-weight_checkpoints.pt}"
+WEIGHT_CHECKPOINT_DTYPE="${WEIGHT_CHECKPOINT_DTYPE:-float32}"
+
+# --------------------------------
+# Basic job info
+# --------------------------------
+ARRAY_INDEX="${PBS_ARRAY_INDEX:-0}"
+JOB_ID="${PBS_JOBID:-no_jobid}"
+HOSTNAME_NOW="$(hostname)"
+START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+mkdir -p "$OUTPUT_DIR"
+mkdir -p "$REPO_DIR/pbs_logs"
+
+cd "$REPO_DIR"
+
+# --------------------------------
+# Modules / environment
+# --------------------------------
+if command -v module >/dev/null 2>&1; then
+    module purge || true
+fi
+
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate "$CONDA_ENV_NAME"
+else
+    source activate "$CONDA_ENV_NAME"
+fi
+
+ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_index_${ARRAY_INDEX}.log"
+
+{
+    echo "[START] $START_TS"
+    echo "[INFO] hostname=$HOSTNAME_NOW"
+    echo "[INFO] repo_dir=$REPO_DIR"
+    echo "[INFO] config_path=$CONFIG_PATH"
+    echo "[INFO] driver_script=$DRIVER_SCRIPT"
+    echo "[INFO] train_script=$TRAIN_SCRIPT"
+    echo "[INFO] run_name=$RUN_NAME"
+    echo "[INFO] output_dir=$OUTPUT_DIR"
+    echo "[INFO] master_log=$MASTER_LOG"
+    echo "[INFO] array_index=$ARRAY_INDEX"
+    echo "[INFO] conda_env_name=$CONDA_ENV_NAME"
+    echo "[INFO] python_bin=$PYTHON_BIN"
+    echo "[INFO] compute_svd_diagnostics=$COMPUTE_SVD_DIAGNOSTICS"
+    echo "[INFO] svd_diag_filename=$SVD_DIAG_FILENAME"
+    echo "[INFO] save_weight_checkpoints=$SAVE_WEIGHT_CHECKPOINTS"
+    echo "[INFO] weight_checkpoint_filename=$WEIGHT_CHECKPOINT_FILENAME"
+    echo "[INFO] weight_checkpoint_dtype=$WEIGHT_CHECKPOINT_DTYPE"
+    echo "[INFO] pwd=$(pwd)"
+    echo "[INFO] which_python=$(command -v "$PYTHON_BIN" || true)"
+    echo "[INFO] python_version=$($PYTHON_BIN --version 2>&1 || true)"
+    echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[INFO] nvidia-smi:"
+        nvidia-smi || true
+    fi
+} | tee -a "$ARRAY_LOG"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "[ERROR] Missing config file: $CONFIG_PATH" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ ! -f "$DRIVER_SCRIPT" ]; then
+    echo "[ERROR] Missing driver script: $DRIVER_SCRIPT" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ ! -f "$TRAIN_SCRIPT" ]; then
+    echo "[ERROR] Missing training script: $TRAIN_SCRIPT" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+# --------------------------------
+# Count jobs. Supports both:
+# 1) old Cartesian grid only
+# 2) grid + coupled_grid
+# --------------------------------
+COUNTS="$($PYTHON_BIN - "$CONFIG_PATH" <<'PY'
+import json
+import sys
+
+config_path = sys.argv[1]
+with open(config_path, "r", encoding="utf-8") as f:
+    cfg = json.load(f)
+
+grid = cfg.get("grid", {})
+seeds = cfg.get("seeds", [])
+coupled_grid = cfg.get("coupled_grid", None)
+
+if not grid:
+    print("0 0 0")
+    raise SystemExit(0)
+
+base_count = 1
+for vals in grid.values():
+    if not isinstance(vals, list):
+        vals = [vals]
+    base_count *= len(vals)
+
+if coupled_grid is None:
+    n_combos = base_count
+else:
+    if not isinstance(coupled_grid, list) or len(coupled_grid) == 0:
+        raise ValueError("coupled_grid must be a non-empty list")
+
+    grid_keys = set(grid.keys())
+    coupled_keys = set()
+    for i, point in enumerate(coupled_grid):
+        if not isinstance(point, dict):
+            raise ValueError("coupled_grid[%d] must be a dictionary" % i)
+        if len(point) == 0:
+            raise ValueError("coupled_grid[%d] cannot be empty" % i)
+        coupled_keys.update(point.keys())
+
+    overlap = grid_keys.intersection(coupled_keys)
+    if overlap:
+        raise ValueError(
+            "These parameters appear both in grid and coupled_grid: " + str(sorted(overlap))
+        )
+
+    n_combos = base_count * len(coupled_grid)
+
+n_seeds = len(seeds)
+n_total = n_combos * n_seeds
+print(n_combos, n_seeds, n_total)
+PY
+)"
+
+read -r N_COMBOS N_SEEDS N_TOTAL <<< "$COUNTS"
+
+{
+    echo "[INFO] n_hyperparameter_combinations=$N_COMBOS"
+    echo "[INFO] n_seeds=$N_SEEDS"
+    echo "[INFO] n_total_array_jobs=$N_TOTAL"
+} | tee -a "$ARRAY_LOG"
+
+if [ "$N_COMBOS" -le 0 ]; then
+    echo "[ERROR] Config contains no hyperparameter combinations." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ "$N_SEEDS" -le 0 ]; then
+    echo "[ERROR] Config contains no seeds." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ "$ARRAY_INDEX" -ge "$N_TOTAL" ]; then
+    echo "[ERROR] PBS_ARRAY_INDEX=$ARRAY_INDEX but total required jobs are $N_TOTAL." | tee -a "$ARRAY_LOG"
+    echo "[ERROR] Fix the PBS array range so it goes from 0 to N_TOTAL minus 1." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+COMBO_INDEX=$((ARRAY_INDEX / N_SEEDS))
+SEED_INDEX=$((ARRAY_INDEX % N_SEEDS))
+
+{
+    echo "[INFO] resolved_combo_index=$COMBO_INDEX"
+    echo "[INFO] resolved_seed_index=$SEED_INDEX"
+} | tee -a "$ARRAY_LOG"
+
+# --------------------------------
+# Launch one independent run on this GPU:
+# one hyperparameter combo + one seed
+# --------------------------------
+CMD=(
+    "$PYTHON_BIN" -u "$DRIVER_SCRIPT"
+    --config "$CONFIG_PATH"
+    --output_dir "$OUTPUT_DIR"
+    --train_script "$TRAIN_SCRIPT"
+    --master_log "$MASTER_LOG"
+    --array_index "$ARRAY_INDEX"
+)
+
+if [ "$USE_RESUME" = "1" ]; then
+    CMD+=(--resume)
+fi
+
+if [ "$COMPUTE_SVD_DIAGNOSTICS" = "1" ]; then
+    CMD+=(--save_svd_diagnostics)
+    CMD+=(--svd_diag_filename "$SVD_DIAG_FILENAME")
+fi
+
+if [ "$SAVE_WEIGHT_CHECKPOINTS" = "1" ]; then
+    CMD+=(--save_weight_checkpoints)
+    CMD+=(--weight_checkpoint_filename "$WEIGHT_CHECKPOINT_FILENAME")
+    CMD+=(--weight_checkpoint_dtype "$WEIGHT_CHECKPOINT_DTYPE")
+fi
+
+{
+    echo "[CMD] ${CMD[*]}"
+    echo "[RUN] launching run_name=$RUN_NAME array_index=$ARRAY_INDEX combo_index=$COMBO_INDEX seed_index=$SEED_INDEX"
+} | tee -a "$ARRAY_LOG"
+
+"${CMD[@]}" 2>&1 | tee -a "$ARRAY_LOG"
+RET=$?
+
+END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "[END] $END_TS return_code=$RET" | tee -a "$ARRAY_LOG"
+
+exit "$RET"

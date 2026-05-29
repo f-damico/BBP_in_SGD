@@ -22,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.models.simple_cnn_regressor import SimpleCNNRegressor
 from src.models import MODEL_BUILDERS
+from src.training.regression_datasets import make_regression_split_datasets
 
 try:
     from svd_diagnostics import (
@@ -200,41 +201,13 @@ def compute_target_stats(dataset: Dataset[Tuple[torch.Tensor, torch.Tensor]]) ->
 
 
 def make_split_datasets(dataset_cfg: Dict[str, Any]) -> Tuple[Dataset, Dataset, float, float]:
-    image_size = int(dataset_cfg.get("image_size", 64))
-    root = Path(dataset_cfg["root"])
-    if not root.is_absolute():
-        root = (REPO_ROOT / root).resolve()
+    """
+    Shared experiment-2 dataset factory.
 
-    max_samples = dataset_cfg.get("max_samples")
-    split_seed = int(dataset_cfg.get("split_seed", 12345))
-    train_fraction = float(dataset_cfg.get("train_fraction", 0.8))
-    if not (0.0 < train_fraction < 1.0):
-        raise ValueError("dataset.train_fraction must be in (0, 1).")
-
-    full_dataset = UTKFaceAgeDataset(
-        root=root,
-        image_size=image_size,
-        max_samples=max_samples,
-        shuffle_seed=split_seed,
-    )
-
-    n_total = len(full_dataset)
-    n_train = max(1, int(math.floor(train_fraction * n_total)))
-    n_test = n_total - n_train
-    if n_test <= 0:
-        raise ValueError("The dataset split produced an empty test set.")
-
-    split_generator = torch.Generator().manual_seed(split_seed)
-    train_dataset, test_dataset = random_split(
-        full_dataset,
-        [n_train, n_test],
-        generator=split_generator,
-    )
-
-    y_mean, y_std = compute_target_stats(train_dataset)
-    train_std_dataset = StandardizedTargetDataset(train_dataset, y_mean=y_mean, y_std=y_std)
-    test_std_dataset = StandardizedTargetDataset(test_dataset, y_mean=y_mean, y_std=y_std)
-    return train_std_dataset, test_std_dataset, y_mean, y_std
+    This delegates to src.training.regression_datasets so that the old UTKFace
+    path and the new Superconductivity path use one common implementation.
+    """
+    return make_regression_split_datasets(dataset_cfg, repo_root=REPO_ROOT)
 
 
 def build_loader(
@@ -728,9 +701,14 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         batch_size=np.int64(microbatch_size),  # now interpreted as microbatch size
         effective_batch_size=np.int64(len(train_dataset)),  # full batch
         epochs=np.int64(epochs),
+        dataset_name=np.array(str(dataset_cfg.get("name", ""))),
         dataset_root=np.array(str(dataset_cfg["root"])),
+        target_name=np.array(str(dataset_cfg.get("target", "target"))),
+        target_units=np.array(str(dataset_cfg.get("target_units", ""))),
         n_train=np.int64(len(train_dataset)),
         n_test=np.int64(len(test_dataset)),
+        target_mean=np.float64(y_mean),
+        target_std=np.float64(y_std),
         target_mean_years=np.float64(y_mean),
         target_std_years=np.float64(y_std),
         optimization_mode=np.array("full_batch_accumulation"),
@@ -738,12 +716,20 @@ def train_one_run(run_spec: Dict[str, Any], output_npz: Path) -> None:
         train_loss_before_step_std_mse=np.asarray(epoch_train_loss_before_step_list, dtype=np.float64),
         train_loss_std_mse=np.asarray(train_loss_list, dtype=np.float64),
         test_loss_std_mse=np.asarray(test_loss_list, dtype=np.float64),
+        train_mae=np.asarray(train_mae_list, dtype=np.float64),
+        test_mae=np.asarray(test_mae_list, dtype=np.float64),
+        train_mse=np.asarray(train_mse_years_list, dtype=np.float64),
+        test_mse=np.asarray(test_mse_years_list, dtype=np.float64),
         train_mae_years=np.asarray(train_mae_list, dtype=np.float64),
         test_mae_years=np.asarray(test_mae_list, dtype=np.float64),
         train_mse_years=np.asarray(train_mse_years_list, dtype=np.float64),
         test_mse_years=np.asarray(test_mse_years_list, dtype=np.float64),
         final_train_loss_std_mse=np.float64(train_loss_list[-1]),
         final_test_loss_std_mse=np.float64(test_loss_list[-1]),
+        final_train_mae=np.float64(train_mae_list[-1]),
+        final_test_mae=np.float64(test_mae_list[-1]),
+        final_train_mse=np.float64(train_mse_years_list[-1]),
+        final_test_mse=np.float64(test_mse_years_list[-1]),
         final_train_mae_years=np.float64(train_mae_list[-1]),
         final_test_mae_years=np.float64(test_mae_list[-1]),
         final_train_mse_years=np.float64(train_mse_years_list[-1]),
