@@ -289,7 +289,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Collect experiment-2 outputs. By default saves results/<run_name>.npy, where run_name is results_dir.name.")
     parser.add_argument("--results_dir", type=str, required=True, help="Root folder containing experiment outputs.")
     parser.add_argument("--save_name", type=str, default=None, help="Base filename without suffix. If omitted, uses results_dir.name.")
-    parser.add_argument("--results_root", type=str, default="results", help="Folder used by the default .npy output path.")
+    parser.add_argument("--results_root", type=str, default="collected_results", help="Folder used by the default .npy output path.")
     parser.add_argument("--output_pickle", type=str, default=None, help="Exact pickle output path.")
     parser.add_argument("--output_npz", type=str, default=None, help="Exact npz output path.")
     parser.add_argument("--output_npy", type=str, default=None, help="Exact npy output path for a dict.")
@@ -325,12 +325,12 @@ def main() -> None:
     #   results/<RUN_NAME>.npy
     # No need to repeat RUN_NAME twice on the command line.
     if args.save_name is None and output_pickle is None and output_npz is None and output_npy is None:
-        output_npy = (Path(args.results_root).expanduser().resolve() / results_dir.name).with_suffix(".npy")
+        output_npy = (Path(args.results_root).expanduser().resolve() / results_dir.name).with_suffix(".npz")
 
     if args.save_name is not None:
         base = (Path(args.results_root).expanduser().resolve() / args.save_name)
         if output_npy is None and output_pickle is None and output_npz is None:
-            output_npy = base.with_suffix(".npy")
+            output_npy = base.with_suffix(".npz")
 
     if output_pickle is not None:
         output_pickle.parent.mkdir(parents=True, exist_ok=True)

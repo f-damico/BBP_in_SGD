@@ -33,7 +33,7 @@ pbs_logs/
 # Raw datasets and local data
 # Ignore all raw data
 # -----------------------------
-data/
+
 datasets/
 dataset/
 raw_data/
@@ -42,7 +42,7 @@ tmp/
 cache/
 *.txt
 /results/
-/data/
+data/
 /pbs_logs/
 /oe/
 /__pycache__/
