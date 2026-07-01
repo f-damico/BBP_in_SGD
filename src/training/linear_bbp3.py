@@ -25,7 +25,7 @@ def relup(x):
   return np.heaviside(x, 0)
 
 def relupp(x):
-  eps = 1e-8 * np.ones_like(x)
+  eps = 1e-15 * np.ones_like(x)
   return np.where(np.abs(x) > eps, 0., 1./eps)
 
 def simulate_time(epsilon, sigma, N, M, n_try, n_data, f, fp, data_dir, epochs, W_star, alpha, u_star):
@@ -60,10 +60,10 @@ def simulate_time(epsilon, sigma, N, M, n_try, n_data, f, fp, data_dir, epochs, 
   Xp = np.einsum("nac, nbc -> nab", W_, W_)
 
   # From here
-  _, u_ = np.linalg.eig(Xp)
-  u_top_list[0] = u_[:, :, 0].copy()
+  _, u_ = np.linalg.eigh(Xp)
+  u_top_list[0] = u_[:, :, -1].copy()
 
-  q2_ = np.sum(u_[:, :, 0] * u_star, axis=-1)**2
+  q2_ = np.sum(u_[:, :, -1] * u_star, axis=-1)**2
   q2_list[0] = q2_.copy()
   
   for e in range(epochs):
@@ -81,13 +81,13 @@ def simulate_time(epsilon, sigma, N, M, n_try, n_data, f, fp, data_dir, epochs, 
     Xp = np.einsum("nac, nbc -> nab", W_, W_)
     
     try:
-      _, u_ = np.linalg.eig(Xp)
+      _, u_ = np.linalg.eigh(Xp)
     except:
       u_ = np.zeros_like(Xp)
 
-    u_top_list[e+1] = u_[:, :, 0].copy()
+    u_top_list[e+1] = u_[:, :, -1].copy()
 
-    q2_ = np.sum(u_[:, :, 0] * u_star, axis=-1)**2
+    q2_ = np.sum(u_[:, :, -1] * u_star, axis=-1)**2
     q2_list[e+1] = q2_.copy()
 
   # Generate the docstring
@@ -120,7 +120,7 @@ def main(args):
   
   n_try = 15
   n_data = M * alpha
-  epochs = 4
+  epochs = 8
 
   u = np.random.normal(0., 1., size=(N))
   u /= np.linalg.norm(u)
