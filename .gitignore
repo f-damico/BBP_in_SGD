@@ -15,7 +15,6 @@ __pycache__/
 # -----------------------------
 .venv/
 venv/
-env/
 myenv/
 conda-env/
 *.egg-info/
@@ -36,12 +35,13 @@ pbs_logs/
 
 datasets/
 dataset/
-raw_data/
 downloads/
 tmp/
 cache/
 *.txt
 /results/
+experiment_2/
+all_data/
 data/
 /pbs_logs/
 /oe/
