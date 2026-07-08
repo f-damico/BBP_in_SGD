@@ -1,0 +1,3 @@
+[submodule "lib/global_chanju"]
+	path = lib/global_chanju
+	url = https://github.com/chanjure/global_chanju.git
