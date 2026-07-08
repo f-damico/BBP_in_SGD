@@ -12,7 +12,6 @@ Data and code release for [arXiv:2606.28486](https://arxiv.org/abs/2606.28486)
 ├── collected_results               <- Directory for output of the workflow and notebooks
 │   └── run_collected
 ├── env                             <- Environment files
-├── libs                            <- Submodules including figure styles
 ├── LICENSE
 ├── README.md
 └── src
