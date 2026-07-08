@@ -1,0 +1,166 @@
+#!/bin/bash
+#PBS -N ts_phase_diag
+#PBS -q gpuq-longrun
+#PBS -J 0-19
+#PBS -l select=1:ncpus=4:ngpus=1:mem=24gb
+#PBS -l walltime=100:00:00
+#PBS -j oe
+#PBS -o pbs_logs/
+
+set -euo pipefail
+
+# -------------------------------
+# User-editable settings
+# -------------------------------
+REPO_DIR="${PBS_O_WORKDIR:-$PWD}"
+CONFIG_PATH="${CONFIG_PATH:-$REPO_DIR/src/phase_diagram/grid_phase_diagram.json}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-$REPO_DIR/src/training/train_teacher_student.py}"
+
+# Name of this full experiment batch
+RUN_NAME="${RUN_NAME:-paper_exact_repro}"
+
+# All outputs for this submission go here
+OUTPUT_DIR="${OUTPUT_DIR:-$REPO_DIR/results/phase_diagram/$RUN_NAME}"
+MASTER_LOG="${MASTER_LOG:-$OUTPUT_DIR/launch_log.txt}"
+
+MAX_RUNS="${MAX_RUNS:-}"
+USE_RESUME="${USE_RESUME:-1}"
+CONDA_ENV_NAME="${CONDA_ENV_NAME:-rhm}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+# -------------------------------
+# Optional SVD diagnostics
+# Default OFF. Set COMPUTE_SVD_DIAGNOSTICS=1 when submitting.
+# -------------------------------
+COMPUTE_SVD_DIAGNOSTICS="${COMPUTE_SVD_DIAGNOSTICS:-0}"
+SVD_DIAG_FILENAME="${SVD_DIAG_FILENAME:-svd_diagnostics.pt}"
+
+# -------------------------------
+# Basic job info
+# -------------------------------
+SEED_INDEX="${PBS_ARRAY_INDEX:-0}"
+JOB_ID="${PBS_JOBID:-no_jobid}"
+HOSTNAME_NOW="$(hostname)"
+START_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+mkdir -p "$OUTPUT_DIR"
+mkdir -p "$REPO_DIR/pbs_logs"
+
+cd "$REPO_DIR"
+
+# -------------------------------
+# Modules / environment
+# Adapt to your cluster if needed
+# -------------------------------
+if command -v module >/dev/null 2>&1; then
+    module purge || true
+    # Example:
+    # module load cuda/12.1
+    # module load anaconda3
+fi
+
+# Prefer conda.sh when available
+if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+    source "$HOME/miniconda3/etc/profile.d/conda.sh"
+    conda activate "$CONDA_ENV_NAME"
+else
+    source activate "$CONDA_ENV_NAME"
+fi
+
+ARRAY_LOG="$REPO_DIR/pbs_logs/array_${JOB_ID}_run_${RUN_NAME}_seedindex_${SEED_INDEX}.log"
+
+{
+    echo "[START] $START_TS"
+    echo "[INFO] hostname=$HOSTNAME_NOW"
+    echo "[INFO] repo_dir=$REPO_DIR"
+    echo "[INFO] config_path=$CONFIG_PATH"
+    echo "[INFO] train_script=$TRAIN_SCRIPT"
+    echo "[INFO] run_name=$RUN_NAME"
+    echo "[INFO] output_dir=$OUTPUT_DIR"
+    echo "[INFO] master_log=$MASTER_LOG"
+    echo "[INFO] seed_index=$SEED_INDEX"
+    echo "[INFO] conda_env_name=$CONDA_ENV_NAME"
+    echo "[INFO] python_bin=$PYTHON_BIN"
+    echo "[INFO] pwd=$(pwd)"
+    echo "[INFO] which_python=$(command -v "$PYTHON_BIN" || true)"
+    echo "[INFO] python_version=$($PYTHON_BIN --version 2>&1 || true)"
+    echo "[INFO] cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[INFO] nvidia-smi:"
+        nvidia-smi || true
+    fi
+} | tee -a "$ARRAY_LOG"
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "[ERROR] Missing config file: $CONFIG_PATH" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ ! -f "$TRAIN_SCRIPT" ]; then
+    echo "[ERROR] Missing training script: $TRAIN_SCRIPT" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+if [ ! -f "$REPO_DIR/src/phase_diagram/experiment.py" ]; then
+    echo "[ERROR] Missing experiment driver: $REPO_DIR/src/phase_diagram/experiment.py" | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+# -------------------------------
+# Check how many seeds are in the config
+# -------------------------------
+N_SEEDS="$($PYTHON_BIN - <<'PY' "$CONFIG_PATH"
+import json, sys
+with open(sys.argv[1], "r") as f:
+    cfg = json.load(f)
+seeds = cfg.get("seeds", [])
+print(len(seeds))
+PY
+)"
+
+echo "[INFO] n_seeds_in_config=$N_SEEDS" | tee -a "$ARRAY_LOG"
+
+if [ "$SEED_INDEX" -ge "$N_SEEDS" ]; then
+    echo "[ERROR] PBS_ARRAY_INDEX=$SEED_INDEX but config contains only $N_SEEDS seeds." | tee -a "$ARRAY_LOG"
+    echo "[ERROR] Fix the array range in '#PBS -J ...' so it matches the seeds list." | tee -a "$ARRAY_LOG"
+    exit 1
+fi
+
+# -------------------------------
+# Build command
+# -------------------------------
+CMD=(
+    "$PYTHON_BIN" -u "$REPO_DIR/src/phase_diagram/experiment.py"
+    --config "$CONFIG_PATH"
+    --output_dir "$OUTPUT_DIR"
+    --train_script "$TRAIN_SCRIPT"
+    --master_log "$MASTER_LOG"
+    --seed_index "$SEED_INDEX"
+)
+
+if [ "$USE_RESUME" = "1" ]; then
+    CMD+=(--resume)
+fi
+
+if [ -n "$MAX_RUNS" ]; then
+    CMD+=(--max_runs "$MAX_RUNS")
+fi
+
+if [ "$COMPUTE_SVD_DIAGNOSTICS" = "1" ]; then
+    CMD+=(--save_svd_diagnostics)
+    CMD+=(--svd_diag_filename "$SVD_DIAG_FILENAME")
+fi
+
+{
+    echo "[CMD] ${CMD[*]}"
+    echo "[RUN] launching run_name=${RUN_NAME} seed_index=${SEED_INDEX}"
+} | tee -a "$ARRAY_LOG"
+
+"${CMD[@]}" 2>&1 | tee -a "$ARRAY_LOG"
+RET=$?
+
+END_TS="$(date '+%Y-%m-%d %H:%M:%S')"
+echo "[END] $END_TS return_code=$RET" | tee -a "$ARRAY_LOG"
+
+exit $RET
+

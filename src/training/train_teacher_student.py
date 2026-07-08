@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Training script for the teacher-student phase-diagram experiment.
-Outputs:
-- output_npz: compressed NumPy file with loss trajectories + metadata;
-- metrics_log.txt next to output_npz: plain-text training log.
-"""
-
 from __future__ import annotations
 
 import argparse

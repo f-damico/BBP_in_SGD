@@ -31,7 +31,7 @@ try:
         make_initial_svd_payload,
         make_svd_config,
     )
-except ImportError:  # when executed as src/training/train_age_regression_full.py
+except ImportError:  
     from src.training.svd_diagnostics import (
         append_weight_svd_diagnostics,
         infer_input_shape_from_configs,

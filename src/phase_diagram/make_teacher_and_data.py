@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Create
-  1) a TEACHER MLP (no bias, tanh activations),
-  2) a corresponding teacher-generated regression dataset (X_train, y_train, X_test, y_test).
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass

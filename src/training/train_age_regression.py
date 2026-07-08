@@ -1,49 +1,4 @@
 #!/usr/bin/env python3
-"""
-Training script for experiment 2 using the OLD/CANONICAL run_spec schema.
-
-Expected run_spec.json, created by experiment_age_phase_diagram.py:
-
-{
-  "seed": 1,
-  "architecture": {
-    "model_name": "dnn",
-    "input_dim": 81,
-    "hidden_dims": [1024],
-    "output_dim": 1,
-    "activation": "relu",
-    "bias": true
-  },
-  "dataset": {
-    "name": "superconductivity",
-    "root": "dataset/superconductivity",
-    "processed_path": "dataset/superconductivity/processed/superconductivity.npz",
-    "target": "critical_temp",
-    "target_units": "K",
-    "train_fraction": 0.8,
-    "split_seed": 12345,
-    "max_samples": null,
-    "standardize_x": true,
-    "standardize_y": true,
-    "num_workers": 0
-  },
-  "train": {
-    "optimizer": "sgd",
-    "lr": 0.0128,
-    "inv_sigma_w": 8.0,
-    "sigma2_w": 0.015625,
-    "grad_clip_norm": 10.0,
-    "batch_size": 128,
-    "epochs": 1000,
-    "momentum": 0.0,
-    "weight_decay": 0.0,
-    "eval_epochs": [1, 2, 5, 10, ...]
-  }
-}
-
-No new-style keys such as "model", "training", "initialization", or "output" are used.
-"""
-
 from __future__ import annotations
 
 import argparse

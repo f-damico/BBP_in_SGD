@@ -1,15 +1,3 @@
-"""
-Unified regression dataset utilities for experiment 2.
-
-Supported dataset names:
-    - utkface_age / utkface / faces / age
-    - superconductivity / superconductor
-    - shapes3d / 3dshapes
-
-The training script can keep the old name train_age_regression.py, but the
-actual dataset is selected from the run_spec/config dataset block.
-"""
-
 from __future__ import annotations
 
 import json
